@@ -5,13 +5,14 @@ import os
 import shutil
 import asyncio
 import requests
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image as PILImage, ImageDraw, ImageFont
 from typing import Dict, Any, Optional
 
 from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
-from astrbot.core.message.components import Image as AstrImage, Plain, At
+from astrbot.core.message.components import Plain, At
+from astrbot.core.message.components import Image
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 
@@ -70,6 +71,7 @@ class ValorantShopPlugin(Star):
 
     def get_shop_data(self, user_id: str, user_config: Dict[str, Any]) -> Optional[str]:
         """获取商店信息并生成图片的base64编码"""
+        logger.info(f"开始获取商店数据，user_id: {user_id}, userId: {user_config.get('userId', '未知')}")
         url = "https://app.mval.qq.com/go/mlol_store/agame/user_store"
         
         # 检查配置是否完整
@@ -93,6 +95,7 @@ class ValorantShopPlugin(Star):
         data = {}
         
         try:
+            logger.info(f"发送API请求到 {url}")
             response = requests.post(url, headers=headers, json=data, timeout=15)
             response.raise_for_status()
             
@@ -130,8 +133,8 @@ class ValorantShopPlugin(Star):
             # 处理商品图片
             processed_images = []
             
-            for goods in goods_list:
-                logger.info(f"处理商品: {goods['goods_name']}")
+            for i, goods in enumerate(goods_list):
+                logger.info(f"处理商品 {i+1}/{len(goods_list)}: {goods['goods_name']}")
                 
                 # 下载背景图和商品图
                 bg_img_url = goods.get('bg_image')
@@ -202,6 +205,7 @@ class ValorantShopPlugin(Star):
                     processed_image_path = os.path.join(f"./temp/valo/{user_id}", f"{goods['goods_id']}.jpg")
                     new_img.save(processed_image_path)
                     processed_images.append(processed_image_path)
+                    logger.info(f"商品 {goods['goods_name']} 处理完成")
                     
                 except Exception as e:
                     logger.error(f"图片处理失败: {e}")
@@ -215,6 +219,8 @@ class ValorantShopPlugin(Star):
                 logger.error("没有商品图片处理成功")
                 return None
                 
+            logger.info(f"成功处理 {len(processed_images)} 张商品图片")
+            
             # 合并所有处理后的图片
             logger.info("合并所有图片")
             images = [Image.open(img_path) for img_path in processed_images]
@@ -235,27 +241,33 @@ class ValorantShopPlugin(Star):
             # 保存合并后的图片
             merged_image_path = f"./temp/valo/{user_id}/merged.jpg"
             merged_image.save(merged_image_path)
+            logger.info(f"合并图片保存到: {merged_image_path}")
             
             # 转换为base64
             with open(merged_image_path, 'rb') as f:
-                base64_data = base64.b64encode(f.read()).decode('utf-8')
+                image_bytes = f.read()
+                base64_data = base64.b64encode(image_bytes).decode('utf-8')
+                logger.info(f"图片转换为base64，原始大小: {len(image_bytes)} 字节, base64长度: {len(base64_data)}")
             
             # 清理临时目录
             temp_dir = f"./temp/valo/{user_id}"
             if os.path.exists(temp_dir):
                 shutil.rmtree(temp_dir)
+                logger.info(f"清理临时目录: {temp_dir}")
                 
+            logger.info("商店图片生成完成")
             return base64_data
             
         except requests.RequestException as e:
             logger.error(f"网络请求失败: {e}")
             return None
         except Exception as e:
-            logger.error(f"处理失败: {e}")
+            logger.error(f"处理失败: {e}", exc_info=True)
             return None
 
     async def get_user_config(self, user_id: str) -> Optional[Dict[str, Any]]:
         """从数据库获取用户配置"""
+        logger.info(f"查询用户配置，user_id: {user_id}")
         db = self.context.get_db()
         async with db.get_db() as session:
             session: AsyncSession
@@ -265,15 +277,19 @@ class ValorantShopPlugin(Star):
             )
             row = result.fetchone()
             if row:
+                logger.info(f"找到用户配置: userId={row[0]}, tid={row[1][:20]}...")
                 return {
                     'userId': row[0],
                     'tid': row[1],
                     'nickname': row[2]
                 }
+            else:
+                logger.warning(f"未找到用户 {user_id} 的配置")
         return None
 
     async def save_user_config(self, user_id: str, userId: str, tid: str, nickname: Optional[str] = None):
         """保存用户配置到数据库"""
+        logger.info(f"保存用户配置: user_id={user_id}, userId={userId[:20]}...")
         db = self.context.get_db()
         async with db.get_db() as session:
             session: AsyncSession
@@ -286,6 +302,7 @@ class ValorantShopPlugin(Star):
                     """),
                     {"user_id": user_id, "userId": userId, "tid": tid, "nickname": nickname}
                 )
+                logger.info(f"用户配置保存成功: user_id={user_id}")
 
     def parse_config_simple(self, message_str: str) -> Optional[Dict[str, str]]:
         """简单规则解析配置信息"""
@@ -435,21 +452,23 @@ class ValorantShopPlugin(Star):
         logger.error("所有解析方法都失败")
         return None
 
-    async def handle_daily_shop(self, event: AstrMessageEvent, target_user_id: Optional[str] = None) -> MessageEventResult:
-        """处理每日商店指令"""
+    async def handle_daily_shop(self, event: AstrMessageEvent, target_user_id: Optional[str] = None):
+        """处理每日商店指令 - 生成器版本"""
         # 确定查询的用户ID
         if target_user_id:
             # 查询其他用户的商店
             user_id = target_user_id
             user_config = await self.get_user_config(user_id)
             if not user_config:
-                return event.plain_result(f"未找到用户 {target_user_id} 的配置")
+                yield event.plain_result(f"未找到用户 {target_user_id} 的配置")
+                return
         else:
             # 查询自己的商店
             user_id = event.get_sender_id()
             user_config = await self.get_user_config(user_id)
             if not user_config:
-                return event.plain_result("您尚未绑定无畏契约账户信息，请使用 /瓦 指令进行绑定")
+                yield event.plain_result("您尚未绑定无畏契约账户信息，请使用 /瓦 指令进行绑定")
+                return
 
         logger.info(f"开始为用户 {user_id} 获取商店信息")
         
@@ -457,14 +476,25 @@ class ValorantShopPlugin(Star):
         shop_data = self.get_shop_data(user_id, user_config)
         
         if shop_data:
-            # 发送图片消息
-            return event.image_result(shop_data)
+            # 发送图片消息 - 使用正确的图片返回方式
+            try:
+                # 解码base64数据
+                import base64
+                image_data = base64.b64decode(shop_data)
+                # 使用Image.fromBytes创建图片组件
+                yield event.chain_result([Image.fromBytes(image_data)])
+            except Exception as e:
+                logger.error(f"图片消息创建失败: {e}")
+                if target_user_id:
+                    yield event.plain_result(f"获取用户 {target_user_id} 的商店信息失败，图片生成错误")
+                else:
+                    yield event.plain_result("获取商店信息失败，图片生成错误")
         else:
             # 获取商店信息失败
             if target_user_id:
-                return event.plain_result(f"获取用户 {target_user_id} 的商店信息失败，可能是配置过期或网络问题")
+                yield event.plain_result(f"获取用户 {target_user_id} 的商店信息失败，可能是配置过期或网络问题")
             else:
-                return event.plain_result("获取商店信息失败，可能是配置过期或网络问题，请使用 /瓦 重新绑定")
+                yield event.plain_result("获取商店信息失败，可能是配置过期或网络问题，请使用 /瓦 重新绑定")
 
     async def get_at_id(self, event: AstrMessageEvent) -> Optional[str]:
         """从消息中获取被@的用户ID"""
@@ -489,8 +519,8 @@ class ValorantShopPlugin(Star):
             logger.info(f"检测到@用户，目标用户ID: {target_user_id}")
         
         # 调用处理函数，传入目标用户ID（如果有）
-        result = await self.handle_daily_shop(event, target_user_id)
-        yield result
+        async for result in self.handle_daily_shop(event, target_user_id):
+            yield result
 
     @filter.command("瓦")
     async def bind_wallet_command(self, event: AstrMessageEvent):
