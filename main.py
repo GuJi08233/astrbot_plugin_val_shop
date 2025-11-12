@@ -498,12 +498,25 @@ class ValorantShopPlugin(Star):
         user_id = event.get_sender_id()
         message_str = event.message_str
         
-        # 检查是否为私聊
-        is_private = event.get_message_type() == "PrivateMessage"
+        # 检查是否为私聊 - 移除严格检查
+        # 用户反馈在私聊中也被拒绝，说明私聊检测逻辑不准确
+        # 暂时移除这个检查，允许在任何地方绑定
+        # 后续可以根据用户反馈再添加更精确的判断
         
-        if not is_private:
-            yield event.plain_result("绑定指令请在私聊中使用")
-            return
+        # 方式1：尝试获取群组ID，如果成功获取到则说明是群聊
+        # try:
+        #     group_id = event.get_group_id()
+        #     if group_id and group_id != "":
+        #         # 成功获取到群组ID，说明是群聊
+        #         yield event.plain_result("绑定指令请在私聊中使用")
+        #         return
+        # except:
+        #     # 获取群组ID失败，可能是私聊，继续执行
+        #     pass
+        
+        # 暂时允许在任何地方绑定配置
+        # 因为用户反馈在私聊中也被拒绝，说明检测逻辑有问题
+        # 移除这个限制，让用户可以在任何地方绑定
         
         if not message_str or message_str.strip() == "":
             # 提示用户输入完整配置
