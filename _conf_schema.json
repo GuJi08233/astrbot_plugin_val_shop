@@ -1,0 +1,79 @@
+{
+  "title": "无畏契约每日商店插件配置",
+  "description": "配置无畏契约每日商店插件的行为参数",
+  "type": "object",
+  "properties": {
+    "shop_refresh_interval": {
+      "title": "商店刷新间隔",
+      "description": "重新查询商店的时间间隔（秒）",
+      "type": "integer",
+      "default": 300,
+      "minimum": 60,
+      "maximum": 3600
+    },
+    "image_quality": {
+      "title": "图片质量",
+      "description": "生成的图片质量级别",
+      "type": "string",
+      "enum": ["low", "medium", "high"],
+      "default": "medium"
+    },
+    "max_image_size": {
+      "title": "最大图片尺寸",
+      "description": "生成图片的最大宽度（像素）",
+      "type": "integer",
+      "default": 800,
+      "minimum": 400,
+      "maximum": 1200
+    },
+    "font_family": {
+      "title": "字体文件",
+      "description": "用于显示文字的字体文件路径",
+      "type": "string",
+      "default": "./fontFamily.ttf"
+    },
+    "enable_cache": {
+      "title": "启用缓存",
+      "description": "是否缓存图片以提高响应速度",
+      "type": "boolean",
+      "default": true
+    },
+    "cache_duration": {
+      "title": "缓存时长",
+      "description": "图片缓存时间（分钟）",
+      "type": "integer",
+      "default": 30,
+      "minimum": 5,
+      "maximum": 1440
+    },
+    "debug_mode": {
+      "title": "调试模式",
+      "description": "启用详细日志记录",
+      "type": "boolean",
+      "default": false
+    },
+    "llm_provider": {
+      "title": "LLM服务商",
+      "description": "用于智能解析配置的LLM服务商，留空使用默认服务商",
+      "type": "string",
+      "default": "",
+      "enum": ["", "openai", "anthropic", "google", "dashscope", "xinference"]
+    },
+    "retry_count": {
+      "title": "重试次数",
+      "description": "网络请求失败时的重试次数",
+      "type": "integer",
+      "default": 3,
+      "minimum": 0,
+      "maximum": 5
+    },
+    "timeout": {
+      "title": "超时时间",
+      "description": "网络请求超时时间（秒）",
+      "type": "integer",
+      "default": 15,
+      "minimum": 5,
+      "maximum": 60
+    }
+  }
+}
