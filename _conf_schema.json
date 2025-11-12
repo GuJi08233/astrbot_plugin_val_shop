@@ -56,8 +56,7 @@
       "title": "LLM服务商",
       "description": "用于智能解析配置的LLM服务商，留空使用默认服务商",
       "type": "string",
-      "default": "",
-      "enum": ["", "openai", "anthropic", "google", "dashscope", "xinference"]
+      "default": ""
     },
     "retry_count": {
       "title": "重试次数",
