@@ -363,9 +363,6 @@ class ValorantShopPlugin(Star):
                 return None
                 
             # 调试模式日志
-            logger.info(f"使用默认LLM提供者进行配置解析")
-                
-            # 调试模式日志
             logger.info("使用默认LLM提供者进行配置解析")
                 
             system_prompt = """你是一个配置信息解析助手。请从用户提供的文本中提取无畏契约账户的配置信息。
@@ -403,10 +400,6 @@ class ValorantShopPlugin(Star):
             if not llm_response or not llm_response.completion_text:
                 logger.error("LLM响应为空")
                 return None
-                
-            # 调试模式日志
-            if debug_mode:
-                logger.info(f"LLM响应: {llm_response.completion_text}")
                 
             # 尝试解析JSON响应
             import re
