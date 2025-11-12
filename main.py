@@ -153,9 +153,9 @@ class ValorantShopPlugin(Star):
                     
                 # 处理图片
                 try:
-                    # 打开图片
-                    img1 = Image.open(bg_img_path)
-                    img2 = Image.open(goods_img_path)
+                    # 打开图片 - 使用PILImage而不是Image
+                    img1 = PILImage.open(bg_img_path)
+                    img2 = PILImage.open(goods_img_path)
                     
                     # 调整第二张图片的大小
                     height = 180
@@ -166,8 +166,8 @@ class ValorantShopPlugin(Star):
                     x = (img1.width - img2_resized.width) // 2
                     y = (img1.height - img2_resized.height) // 2
                     
-                    # 创建新图像
-                    new_img = Image.new('RGB', img1.size)
+                    # 创建新图像 - 使用PILImage而不是Image
+                    new_img = PILImage.new('RGB', img1.size)
                     new_img.paste(img1, (0, 0))
                     
                     # 粘贴商品图片 (支持透明通道)
@@ -223,14 +223,14 @@ class ValorantShopPlugin(Star):
             
             # 合并所有处理后的图片
             logger.info("合并所有图片")
-            images = [Image.open(img_path) for img_path in processed_images]
+            images = [PILImage.open(img_path) for img_path in processed_images]
             
             # 计算合并后的图片尺寸
             max_width = max(img.width for img in images)
             total_height = sum(img.height for img in images) + (len(images) - 1) * 20  # 20px 间距
             
             # 创建合并后的图片
-            merged_image = Image.new('RGB', (max_width, total_height), color='white')
+            merged_image = PILImage.new('RGB', (max_width, total_height), color='white')
             
             # 将所有图片堆叠在一起
             y_offset = 0
