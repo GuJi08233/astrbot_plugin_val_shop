@@ -768,8 +768,8 @@ class ValorantShopPlugin(Star):
         yield event.plain_result("正在生成登录二维码，请稍候...")
         
         try:
-            # 先生成二维码，不等待登录结果
-            qr_filename = await self.generate_qr_code()
+            # 执行完整的二维码登录流程
+            qr_filename, login_data = await self.qr_login()
             
             if qr_filename:
                 # 发送二维码图片
@@ -793,8 +793,23 @@ class ValorantShopPlugin(Star):
                     yield event.plain_result("发送二维码失败，请重试")
                     return
                 
-                # 异步等待登录结果
-                asyncio.create_task(self.wait_for_login_result(user_id, event))
+                # 检查登录是否成功
+                if login_data:
+                    # 保存用户配置
+                    await self.save_user_config(
+                        user_id,
+                        login_data['userId'],
+                        login_data['tid'],
+                        login_data.get('nickname')
+                    )
+                    
+                    yield event.plain_result(
+                        f"登录成功！\n"
+                        f"用户ID: {login_data['userId']}\n"
+                        f"现在可以使用 /每日商店 查看每日商店了"
+                    )
+                else:
+                    yield event.plain_result("登录失败或超时，请重试")
             else:
                 yield event.plain_result("二维码生成失败，请重试")
                 
