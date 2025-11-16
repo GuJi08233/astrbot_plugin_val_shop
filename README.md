@@ -23,7 +23,10 @@ git clone https://github.com/GuJi08033/astrbot_plugin_val_shop
 # 2. 复制到AstrBot插件目录
 cp -r astrbot_plugin_val_shop /path/to/astrbot/data/plugins/
 
-# 3. 重启AstrBot
+# 3. 安装浏览器依赖
+playwright install chromium
+
+# 4. 重启AstrBot
 ```
 
 ### 方式二：插件管理器
