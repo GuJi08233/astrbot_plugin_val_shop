@@ -31,8 +31,11 @@ playwright install chromium
 
 ### 方式二：插件管理器
 ```bash
-# 使用AstrBot插件管理器安装
+# 1. 使用AstrBot插件管理器安装
 astrbot plug install https://github.com/GuJi08033/astrbot_plugin_val_shop
+
+# 2. 安装浏览器依赖
+playwright install chromium
 ```
 
 ## 使用方法
