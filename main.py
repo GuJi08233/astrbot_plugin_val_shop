@@ -164,45 +164,42 @@ class ValorantShopPlugin(Star):
             return None
 
     async def generate_qr_code(self):
-        """生成二维码截图，不等待登录结果"""
-        async with async_playwright() as p:
-            # 启动无头浏览器
-            browser = await p.chromium.launch(headless=True)
-            context = await browser.new_context(
-                viewport={'width': 375, 'height': 667},
-                user_agent="Mozilla/5.0 (Linux; Android 12; 23117RK66C Build/V417IR; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/101.0.4951.61 Mobile Safari/537.36 tencent_game_emulator"
-            )
-            page = await context.new_page()
+        """生成二维码截图，返回浏览器对象和页面对象"""
+        p = await async_playwright().__aenter__()
+        # 启动无头浏览器
+        browser = await p.chromium.launch(headless=True)
+        context = await browser.new_context(
+            viewport={'width': 375, 'height': 667},
+            user_agent="Mozilla/5.0 (Linux; Android 12; 23117RK66C Build/V417IR; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/101.0.4951.61 Mobile Safari/537.36 tencent_game_emulator"
+        )
+        page = await context.new_page()
 
-            try:
-                await page.goto(self.LOGIN_URL)
-                
-                # 等待二维码加载
-                await page.wait_for_selector("#qrimg", state="visible", timeout=20000)
-                qr_img_element = await page.query_selector("#qrimg")
-                qr_img_src = await qr_img_element.get_attribute("src")
-                if not qr_img_src:
-                    logger.error("错误：未能找到二维码图片的 src 属性。")
-                    await browser.close()
-                    return None
-                logger.info("二维码已加载成功！")
-                
-                # 保存二维码截图
-                qr_filename = await self.save_qr_screenshot(page)
-                if not qr_filename:
-                    await browser.close()
-                    return None
-                    
-                # 将浏览器对象保存到全局变量，以便后续使用
-                self._login_browser = browser
-                self._login_page = page
-                
-                return qr_filename
-                
-            except Exception as e:
-                logger.error(f"加载二维码时出错: {e}")
+        try:
+            await page.goto(self.LOGIN_URL)
+            
+            # 等待二维码加载
+            await page.wait_for_selector("#qrimg", state="visible", timeout=20000)
+            qr_img_element = await page.query_selector("#qrimg")
+            qr_img_src = await qr_img_element.get_attribute("src")
+            if not qr_img_src:
+                logger.error("错误：未能找到二维码图片的 src 属性。")
                 await browser.close()
-                return None
+                return None, None, None
+            logger.info("二维码已加载成功！")
+            
+            # 保存二维码截图
+            qr_filename = await self.save_qr_screenshot(page)
+            if not qr_filename:
+                await browser.close()
+                return None, None, None
+                
+            # 返回文件名、浏览器对象和页面对象
+            return qr_filename, browser, page
+            
+        except Exception as e:
+            logger.error(f"加载二维码时出错: {e}")
+            await browser.close()
+            return None, None, None
 
     async def wait_for_login_result(self, user_id: str, event: AstrMessageEvent):
         """异步等待登录结果"""
@@ -337,20 +334,15 @@ class ValorantShopPlugin(Star):
 
     async def qr_login(self):
         """执行二维码登录流程（保留原方法以兼容其他可能的调用）"""
-        qr_filename = await self.generate_qr_code()
-        if not qr_filename:
+        # 生成二维码并获取浏览器对象
+        qr_filename, browser, page = await self.generate_qr_code()
+        if not qr_filename or not browser or not page:
             return None, None
             
         # 等待登录结果
         login_successful = asyncio.Event()
         login_failed = asyncio.Event()
         login_data = None
-        
-        if not hasattr(self, '_login_browser') or not hasattr(self, '_login_page'):
-            return qr_filename, None
-            
-        browser = self._login_browser
-        page = self._login_page
 
         # 监听响应事件，用于轮询状态
         async def handle_response(response):
@@ -429,12 +421,6 @@ class ValorantShopPlugin(Star):
             logger.error("⏰ 轮询超时，登录可能未完成。")
 
         await browser.close()
-        
-        # 清理全局变量
-        if hasattr(self, '_login_browser'):
-            delattr(self, '_login_browser')
-        if hasattr(self, '_login_page'):
-            delattr(self, '_login_page')
 
         if login_successful.is_set() and login_data:
             # 获取最终cookie
@@ -768,10 +754,10 @@ class ValorantShopPlugin(Star):
         yield event.plain_result("正在生成登录二维码，请稍候...")
         
         try:
-            # 执行完整的二维码登录流程
-            qr_filename, login_data = await self.qr_login()
+            # 生成二维码并获取浏览器对象
+            qr_filename, browser, page = await self.generate_qr_code()
             
-            if qr_filename:
+            if qr_filename and browser and page:
                 # 发送二维码图片
                 try:
                     with open(qr_filename, 'rb') as f:
@@ -790,24 +776,112 @@ class ValorantShopPlugin(Star):
                         
                 except Exception as e:
                     logger.error(f"发送二维码失败: {e}")
+                    await browser.close()
                     yield event.plain_result("发送二维码失败，请重试")
                     return
                 
-                # 检查登录是否成功
-                if login_data:
-                    # 保存用户配置
-                    await self.save_user_config(
-                        user_id,
-                        login_data['userId'],
-                        login_data['tid'],
-                        login_data.get('nickname')
+                # 等待登录结果
+                login_successful = asyncio.Event()
+                login_failed = asyncio.Event()
+                login_data = None
+
+                # 监听响应事件，用于轮询状态
+                async def handle_response(response):
+                    nonlocal login_data
+                    if "ptqrlogin" in response.url:
+                        try:
+                            text = await response.text()
+                            if "登录成功" in text:
+                                # 从响应文本中提取登录成功后的URL
+                                url_match = re.search(r"ptuiCB\('0','0','([^']+)'", text)
+                                if url_match:
+                                    success_url = url_match.group(1)
+                                    
+                                    # 解析URL中的参数
+                                    parsed_url = urllib.parse.urlparse(success_url)
+                                    fragment = parsed_url.fragment
+                                    
+                                    params = {}
+                                    if fragment:
+                                        if fragment.startswith('#&'):
+                                            fragment = fragment[2:]
+                                        
+                                        query_string = fragment.replace('#&', '&')
+                                        parsed_params = urllib.parse.parse_qs(query_string)
+                                        
+                                        for key, value in parsed_params.items():
+                                            if value:
+                                                params[key] = value[0]
+                                    
+                                    # 提取关键参数
+                                    login_data = {
+                                        "openid": params.get("openid", ""),
+                                        "appid": params.get("appid", ""),
+                                        "access_token": params.get("access_token", ""),
+                                        "pay_token": params.get("pay_token", ""),
+                                        "key": params.get("key", ""),
+                                        "redirect_uri_key": params.get("redirect_uri_key", ""),
+                                        "expires_in": params.get("expires_in", "7776000"),
+                                        "pf": params.get("pf", "openmobile_android"),
+                                        "status_os": params.get("status_os", "12"),
+                                        "status_machine": params.get("status_machine", ""),
+                                        "full_params": params
+                                    }
+                                    
+                                    logger.info("✅ QQ登录成功!")
+                                    login_successful.set()
+                            elif "二维码已失效" in text:
+                                logger.error("❌ 二维码已失效。")
+                                login_failed.set()
+                        except Exception as e:
+                            logger.error(f"处理响应时出错: {e}")
+
+                # 添加事件监听器
+                page.on("response", handle_response)
+
+                # 等待登录成功或失败，或者超时
+                try:
+                    done, pending = await asyncio.wait(
+                        [
+                            asyncio.create_task(login_successful.wait(), name="login_successful"),
+                            asyncio.create_task(login_failed.wait(), name="login_failed"),
+                        ],
+                        return_when=asyncio.FIRST_COMPLETED,
+                        timeout=30,  # 30秒超时
                     )
-                    
-                    yield event.plain_result(
-                        f"登录成功！\n"
-                        f"用户ID: {login_data['userId']}\n"
-                        f"现在可以使用 /每日商店 查看每日商店了"
-                    )
+
+                    for task in done:
+                        if task.get_name() == "login_successful":
+                            logger.info("--- 登录流程结束 (成功) ---")
+                            break
+                        elif task.get_name() == "login_failed":
+                            logger.info("--- 登录流程结束 (失败) ---")
+                            break
+
+                except asyncio.TimeoutError:
+                    logger.error("⏰ 轮询超时，登录可能未完成。")
+
+                await browser.close()
+
+                if login_successful.is_set() and login_data:
+                    # 获取最终cookie
+                    final_data = await self.get_final_cookies(login_data)
+                    if final_data:
+                        # 保存用户配置
+                        await self.save_user_config(
+                            user_id,
+                            final_data['userId'],
+                            final_data['tid'],
+                            final_data.get('nickname')
+                        )
+                        
+                        yield event.plain_result(
+                            f"登录成功！\n"
+                            f"用户ID: {final_data['userId']}\n"
+                            f"现在可以使用 /每日商店 查看每日商店了"
+                        )
+                    else:
+                        yield event.plain_result("获取最终登录信息失败，请重试")
                 else:
                     yield event.plain_result("登录失败或超时，请重试")
             else:
