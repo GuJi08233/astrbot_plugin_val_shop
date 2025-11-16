@@ -7,6 +7,9 @@ import asyncio
 import requests
 from PIL import Image as PILImage, ImageDraw, ImageFont
 from typing import Dict, Any, Optional
+from datetime import datetime
+import urllib.parse
+import re
 
 from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
 from astrbot.api.star import Context, Star, register
@@ -15,6 +18,9 @@ from astrbot.core.message.components import Plain, At
 from astrbot.core.message.components import Image
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
+
+# 导入Playwright
+from playwright.async_api import async_playwright
 
 # 配置日志
 logger = logging.getLogger("astrbot")
@@ -27,6 +33,9 @@ class ValorantShopPlugin(Star):
         import os
         plugin_dir = os.path.dirname(os.path.abspath(__file__))
         self.font_path = os.path.join(plugin_dir, "fontFamily.ttf")
+        
+        # QQ登录配置
+        self.LOGIN_URL = "https://xui.ptlogin2.qq.com/cgi-bin/xlogin?pt_enable_pwd=1&appid=716027609&pt_3rd_aid=102061775&daid=381&pt_skey_valid=0&style=35&force_qr=1&autorefresh=1&s_url=http%3A%2F%2Fconnect.qq.com&refer_cgi=m_authorize&ucheck=1&fall_to_wv=1&status_os=12&redirect_uri=auth%3A%2F%2Ftauth.qq.com%2F&client_id=102061775&pf=openmobile_android&response_type=token&scope=all&sdkp=a&sdkv=3.5.17.lite&sign=a6479455d3e49b597350f13f776a6288&status_machine=MjMxMTdSSzY2Qw%3D%3D&switch=1&time=1763280194&show_download_ui=true&h5sig=trobryxo8IPM0GaSQH12mowKG-CY65brFzkK7_-9EW4&loginty=6"
         
     async def initialize(self):
         """初始化插件，创建数据库表"""
@@ -51,6 +60,233 @@ class ValorantShopPlugin(Star):
     async def terminate(self):
         """插件终止时清理"""
         pass
+
+    async def save_qr_screenshot(self, page, filename=None):
+        """保存二维码截图"""
+        try:
+            if filename is None:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"qr_code_{timestamp}.png"
+            
+            # 等待二维码元素加载
+            qr_element = await page.wait_for_selector("#qrimg", state="visible", timeout=20000)
+            
+            # 截图二维码元素
+            await qr_element.screenshot(path=filename)
+            
+            logger.info(f"✅ 二维码截图已保存: {filename}")
+            return filename
+        except Exception as e:
+            logger.error(f"❌ 保存二维码截图失败: {e}")
+            return None
+
+    async def get_final_cookies(self, login_data):
+        """使用获取到的登录凭证调用mval API获取最终的cookie"""
+        logger.info("\n正在获取最终cookie...")
+        
+        # 从login_data中提取参数
+        openid = login_data.get("openid", "")
+        access_token = login_data.get("access_token", "")
+        
+        if not openid or not access_token:
+            logger.error("错误：缺少必要的参数 openid 或 access_token")
+            return None
+        
+        # 构造请求数据
+        login_url = "https://app.mval.qq.com/go/auth/login_by_qq?source_game_zone=agame&game_zone=agame"
+        
+        headers = {
+            "Cookie": "clientType=9; openid=null; access_token=null;",
+            "User-Agent": "mval/2.4.0.10053 Channel/10068 Manufacturer/Redmi  Mozilla/5.0 (Linux; Android 12; 23117RK66C Build/V417IR; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/101.0.4951.61 Mobile Safari/537.36",
+            "Content-Type": "application/json",
+            "Host": "app.mval.qq.com",
+            "Connection": "Keep-Alive",
+            "Accept-Encoding": "gzip"
+        }
+        
+        data = {
+            "clienttype": 9,
+            "config_params": {
+                "client_dev_name": "23117RK66C",
+                "lang_type": 0
+            },
+            "login_info": {
+                "appid": 102061775,
+                "openid": openid,
+                "qq_info_type": 5,
+                "sig": access_token,
+                "uin": 0
+            },
+            "mappid": 10200,
+            "mcode": "132f0a77d34402abc8463d60100011d19b0e",
+            "source_game_zone": "agame",
+            "game_zone": "agame"
+        }
+        
+        try:
+            response = requests.post(login_url, headers=headers, json=data)
+            response.raise_for_status()
+            result = response.json()
+            
+            if result.get("result") == 0:
+                login_info = result.get("data", {}).get("login_info", {})
+                uin = login_info.get("uin", 0)
+                user_id = login_info.get("user_id", "")
+                wt = login_info.get("wt", "")
+                
+                # 构造最终cookie
+                final_cookie = (
+                    f"clientType=9; "
+                    f"uin=o{uin}; "
+                    f"appid=102061775; "
+                    f"acctype=qc; "
+                    f"openid={openid}; "
+                    f"access_token=null; "
+                    f"userId={user_id}; "
+                    f"accountType=5; "
+                    f"tid={wt};"
+                )
+                
+                logger.info("✅ 成功获取最终cookie!")
+                
+                return {
+                    "userId": user_id,
+                    "tid": wt,
+                    "openid": openid,
+                    "uin": uin,
+                    "final_cookie": final_cookie
+                }
+            else:
+                logger.error(f"获取最终cookie失败: {result.get('msg', '未知错误')}")
+                return None
+        except Exception as e:
+            logger.error(f"获取最终cookie时出错: {e}")
+            return None
+
+    async def qr_login(self):
+        """执行二维码登录流程"""
+        login_successful = asyncio.Event()
+        login_failed = asyncio.Event()
+        login_data = None
+
+        async with async_playwright() as p:
+            # 启动无头浏览器
+            browser = await p.chromium.launch(headless=True)
+            context = await browser.new_context(
+                viewport={'width': 375, 'height': 667},
+                user_agent="Mozilla/5.0 (Linux; Android 12; 23117RK66C Build/V417IR; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/101.0.4951.61 Mobile Safari/537.36 tencent_game_emulator"
+            )
+            page = await context.new_page()
+
+            await page.goto(self.LOGIN_URL)
+
+            # 等待二维码加载
+            try:
+                await page.wait_for_selector("#qrimg", state="visible", timeout=20000)
+                qr_img_element = await page.query_selector("#qrimg")
+                qr_img_src = await qr_img_element.get_attribute("src")
+                if not qr_img_src:
+                    logger.error("错误：未能找到二维码图片的 src 属性。")
+                    await browser.close()
+                    return None, None
+                logger.info("二维码已加载成功！")
+                
+                # 保存二维码截图
+                qr_filename = await self.save_qr_screenshot(page)
+                if not qr_filename:
+                    await browser.close()
+                    return None, None
+                    
+            except Exception as e:
+                logger.error(f"加载二维码时出错: {e}")
+                await browser.close()
+                return None, None
+
+            # 监听响应事件，用于轮询状态
+            async def handle_response(response):
+                nonlocal login_data
+                if "ptqrlogin" in response.url:
+                    try:
+                        text = await response.text()
+                        if "登录成功" in text:
+                            # 从响应文本中提取登录成功后的URL
+                            url_match = re.search(r"ptuiCB\('0','0','([^']+)'", text)
+                            if url_match:
+                                success_url = url_match.group(1)
+                                
+                                # 解析URL中的参数
+                                parsed_url = urllib.parse.urlparse(success_url)
+                                fragment = parsed_url.fragment
+                                
+                                params = {}
+                                if fragment:
+                                    if fragment.startswith('#&'):
+                                        fragment = fragment[2:]
+                                    
+                                    query_string = fragment.replace('#&', '&')
+                                    parsed_params = urllib.parse.parse_qs(query_string)
+                                    
+                                    for key, value in parsed_params.items():
+                                        if value:
+                                            params[key] = value[0]
+                                
+                                # 提取关键参数
+                                login_data = {
+                                    "openid": params.get("openid", ""),
+                                    "appid": params.get("appid", ""),
+                                    "access_token": params.get("access_token", ""),
+                                    "pay_token": params.get("pay_token", ""),
+                                    "key": params.get("key", ""),
+                                    "redirect_uri_key": params.get("redirect_uri_key", ""),
+                                    "expires_in": params.get("expires_in", "7776000"),
+                                    "pf": params.get("pf", "openmobile_android"),
+                                    "status_os": params.get("status_os", "12"),
+                                    "status_machine": params.get("status_machine", ""),
+                                    "full_params": params
+                                }
+                                
+                                logger.info("✅ QQ登录成功!")
+                                login_successful.set()
+                        elif "二维码已失效" in text:
+                            logger.error("❌ 二维码已失效。")
+                            login_failed.set()
+                    except Exception as e:
+                        logger.error(f"处理响应时出错: {e}")
+
+            # 添加事件监听器
+            page.on("response", handle_response)
+
+            # 等待登录成功或失败，或者超时
+            try:
+                done, pending = await asyncio.wait(
+                    [
+                        asyncio.create_task(login_successful.wait(), name="login_successful"),
+                        asyncio.create_task(login_failed.wait(), name="login_failed"),
+                    ],
+                    return_when=asyncio.FIRST_COMPLETED,
+                    timeout=30,  # 30秒超时
+                )
+
+                for task in done:
+                    if task.get_name() == "login_successful":
+                        logger.info("--- 登录流程结束 (成功) ---")
+                        break
+                    elif task.get_name() == "login_failed":
+                        logger.info("--- 登录流程结束 (失败) ---")
+                        break
+
+            except asyncio.TimeoutError:
+                logger.error("⏰ 轮询超时，登录可能未完成。")
+
+            await browser.close()
+
+        if login_successful.is_set() and login_data:
+            # 获取最终cookie
+            final_data = await self.get_final_cookies(login_data)
+            if final_data:
+                return qr_filename, final_data
+        
+        return qr_filename, None
 
     def download_image(self, url: str, user_id: str, filename: str) -> Optional[str]:
         """下载图片到临时目录"""
@@ -304,198 +540,6 @@ class ValorantShopPlugin(Star):
                 )
                 logger.info(f"用户配置保存成功: user_id={user_id}")
 
-    def parse_config_simple(self, message_str: str) -> Optional[Dict[str, str]]:
-        """简单规则解析配置信息"""
-        try:
-            config = {}
-            
-            # 支持多种分隔符：分号、换行、空格
-            separators = [';', '\n', ' ']
-            
-            # 尝试按分号分割（Cookie格式）
-            if ';' in message_str:
-                parts = message_str.split(';')
-            else:
-                # 按换行分割
-                parts = message_str.strip().split('\n')
-            
-            for part in parts:
-                part = part.strip()
-                if not part:
-                    continue
-                    
-                # 尝试多种分隔符
-                if ':' in part:
-                    key, value = part.split(':', 1)
-                elif '=' in part:
-                    key, value = part.split('=', 1)
-                elif '：' in part:  # 中文冒号
-                    key, value = part.split('：', 1)
-                else:
-                    continue
-                    
-                key = key.strip()
-                value = value.strip()
-                
-                # 标准化键名
-                if key.lower() in ['userid', 'user_id', '用户id']:
-                    config['userId'] = value
-                elif key.lower() in ['tid', 'token', '令牌']:
-                    config['tid'] = value
-                elif key.lower() in ['nickname', '昵称']:
-                    config['nickname'] = value
-                elif key.lower() in ['clienttype', 'client_type']:
-                    config['clientType'] = value
-                elif key.lower() in ['uin']:
-                    config['uin'] = value
-                elif key.lower() in ['appid']:
-                    config['appid'] = value
-                elif key.lower() in ['acctype']:
-                    config['acctype'] = value
-                elif key.lower() in ['openid']:
-                    config['openid'] = value
-                elif key.lower() in ['access_token']:
-                    config['access_token'] = value
-                elif key.lower() in ['accounttype', 'account_type']:
-                    config['accountType'] = value
-                else:
-                    config[key] = value
-            
-            # 验证必需字段
-            if 'userId' in config and 'tid' in config:
-                return config
-                
-        except Exception as e:
-            logger.error(f"简单解析失败: {e}")
-            
-        return None
-
-    async def parse_config_with_llm(self, message_str: str) -> Optional[Dict[str, str]]:
-        """使用LLM解析配置信息"""
-        try:
-            # 获取插件配置（简化版本，直接使用默认LLM提供者）
-            get_using = self.context.get_using_provider()
-            if not get_using:
-                logger.warning("无法获取默认LLM提供者")
-                return None
-                
-            # 调试模式日志
-            logger.info("使用默认LLM提供者进行配置解析")
-                
-            system_prompt = """你是一个配置信息解析助手。请从用户提供的文本中提取无畏契约账户的配置信息。
-
-需要提取的字段：
-- userId: 无畏契约用户ID，通常以"JA-"开头
-- tid: 认证令牌，通常是很长的字符串
-- nickname: 用户昵称（可选）
-- 其他可能的字段：clientType, uin, appid, acctype, openid, access_token, accountType
-
-请严格按照以下JSON格式返回，不要添加任何其他文字：
-{
-    "userId": "提取的userId",
-    "tid": "提取的tid",
-    "nickname": "提取的昵称（如果有）",
-    "clientType": "提取的clientType（如果有）",
-    "uin": "提取的uin（如果有）",
-    "appid": "提取的appid（如果有）",
-    "acctype": "提取的acctype（如果有）",
-    "openid": "提取的openid（如果有）",
-    "access_token": "提取的access_token（如果有）",
-    "accountType": "提取的accountType（如果有）"
-}
-
-如果某个字段无法提取，请用null表示。特别注意：
-1. Cookie格式通常用分号分隔多个键值对
-2. userId通常以"JA-"开头
-3. tid通常是很长的十六进制字符串"""
-
-            llm_response = await get_using.text_chat(
-                system_prompt=system_prompt,
-                prompt=f"请解析以下配置信息：\n{message_str}",
-            )
-            
-            if not llm_response or not llm_response.completion_text:
-                logger.error("LLM响应为空")
-                return None
-                
-            # 尝试解析JSON响应
-            import re
-            json_match = re.search(r'\{.*\}', llm_response.completion_text, re.DOTALL)
-            if json_match:
-                json_str = json_match.group(0)
-                config = json.loads(json_str)
-                
-                # 验证必需字段
-                if config.get('userId') and config.get('tid'):
-                    return config
-                    
-        except Exception as e:
-            logger.error(f"LLM解析失败: {e}")
-            
-        return None
-
-    async def parse_config_smart(self, message_str: str) -> Optional[Dict[str, str]]:
-        """智能解析配置信息（简单规则+LLM备用）"""
-        # 首先尝试简单规则解析
-        config = self.parse_config_simple(message_str)
-        if config:
-            logger.info("使用简单规则解析成功")
-            return config
-            
-        # 简单解析失败，使用LLM
-        logger.info("简单解析失败，尝试使用LLM解析")
-        config = await self.parse_config_with_llm(message_str)
-        if config:
-            logger.info("使用LLM解析成功")
-            return config
-            
-        logger.error("所有解析方法都失败")
-        return None
-
-    async def handle_daily_shop(self, event: AstrMessageEvent, target_user_id: Optional[str] = None):
-        """处理每日商店指令 - 生成器版本"""
-        # 确定查询的用户ID
-        if target_user_id:
-            # 查询其他用户的商店
-            user_id = target_user_id
-            user_config = await self.get_user_config(user_id)
-            if not user_config:
-                yield event.plain_result(f"未找到用户 {target_user_id} 的配置")
-                return
-        else:
-            # 查询自己的商店
-            user_id = event.get_sender_id()
-            user_config = await self.get_user_config(user_id)
-            if not user_config:
-                yield event.plain_result("您尚未绑定无畏契约账户信息，请使用 /瓦 指令进行绑定")
-                return
-
-        logger.info(f"开始为用户 {user_id} 获取商店信息")
-        
-        # 获取商店信息
-        shop_data = self.get_shop_data(user_id, user_config)
-        
-        if shop_data:
-            # 发送图片消息 - 使用正确的图片返回方式
-            try:
-                # 解码base64数据
-                import base64
-                image_data = base64.b64decode(shop_data)
-                # 使用Image.fromBytes创建图片组件
-                yield event.chain_result([Image.fromBytes(image_data)])
-            except Exception as e:
-                logger.error(f"图片消息创建失败: {e}")
-                if target_user_id:
-                    yield event.plain_result(f"获取用户 {target_user_id} 的商店信息失败，图片生成错误")
-                else:
-                    yield event.plain_result("获取商店信息失败，图片生成错误")
-        else:
-            # 获取商店信息失败
-            if target_user_id:
-                yield event.plain_result(f"获取用户 {target_user_id} 的商店信息失败，可能是配置过期或网络问题")
-            else:
-                yield event.plain_result("获取商店信息失败，可能是配置过期或网络问题，请使用 /瓦 重新绑定")
-
     async def get_at_id(self, event: AstrMessageEvent) -> Optional[str]:
         """从消息中获取被@的用户ID"""
         try:
@@ -518,78 +562,99 @@ class ValorantShopPlugin(Star):
         if target_user_id:
             logger.info(f"检测到@用户，目标用户ID: {target_user_id}")
         
-        # 调用处理函数，传入目标用户ID（如果有）
-        async for result in self.handle_daily_shop(event, target_user_id):
-            yield result
+        # 确定查询的用户ID
+        if target_user_id:
+            # 查询其他用户的商店
+            user_id = target_user_id
+            user_config = await self.get_user_config(user_id)
+            if not user_config:
+                yield event.plain_result(f"未找到用户 {target_user_id} 的配置")
+                return
+        else:
+            # 查询自己的商店
+            user_id = event.get_sender_id()
+            user_config = await self.get_user_config(user_id)
+            if not user_config:
+                yield event.plain_result("您尚未绑定无畏契约账户信息，请使用 /瓦 指令进行绑定")
+                return
+
+        logger.info(f"开始为用户 {user_id} 获取商店信息")
+        
+        # 获取商店信息
+        shop_data = self.get_shop_data(user_id, user_config)
+        
+        if shop_data:
+            # 发送图片消息
+            try:
+                # 解码base64数据
+                import base64
+                image_data = base64.b64decode(shop_data)
+                # 使用Image.fromBytes创建图片组件
+                yield event.chain_result([Image.fromBytes(image_data)])
+            except Exception as e:
+                logger.error(f"图片消息创建失败: {e}")
+                if target_user_id:
+                    yield event.plain_result(f"获取用户 {target_user_id} 的商店信息失败，图片生成错误")
+                else:
+                    yield event.plain_result("获取商店信息失败，图片生成错误")
+        else:
+            # 获取商店信息失败
+            if target_user_id:
+                yield event.plain_result(f"获取用户 {target_user_id} 的商店信息失败，可能是配置过期或网络问题")
+            else:
+                yield event.plain_result("获取商店信息失败，可能是配置过期或网络问题，请使用 /瓦 重新绑定")
 
     @filter.command("瓦")
     async def bind_wallet_command(self, event: AstrMessageEvent):
-        """绑定无畏契约钱包指令"""
+        """绑定无畏契约钱包指令 - 发送二维码登录"""
         user_id = event.get_sender_id()
-        message_str = event.message_str
         
-        # 检查是否为私聊 - 移除严格检查
-        # 用户反馈在私聊中也被拒绝，说明私聊检测逻辑不准确
-        # 暂时移除这个检查，允许在任何地方绑定
-        # 后续可以根据用户反馈再添加更精确的判断
+        yield event.plain_result("正在生成登录二维码，请稍候...")
         
-        # 方式1：尝试获取群组ID，如果成功获取到则说明是群聊
-        # try:
-        #     group_id = event.get_group_id()
-        #     if group_id and group_id != "":
-        #         # 成功获取到群组ID，说明是群聊
-        #         yield event.plain_result("绑定指令请在私聊中使用")
-        #         return
-        # except:
-        #     # 获取群组ID失败，可能是私聊，继续执行
-        #     pass
-        
-        # 暂时允许在任何地方绑定配置
-        # 因为用户反馈在私聊中也被拒绝，说明检测逻辑有问题
-        # 移除这个限制，让用户可以在任何地方绑定
-        
-        if not message_str or message_str.strip() == "":
-            # 提示用户输入完整配置
-            yield event.plain_result(
-                "请输入完整配置信息，格式：\n"
-                "userId:您的userId\n"
-                "tid:您的tid\n\n"
-                "示例：\n"
-                "userId:JA-xxxxxxxxxxxxx\n"
-                "tid:B3C4B3BEA580ED2CD07880058D52F21D11141D4991EFD101B1EA88D7D6271549DA6AD543983551CDF6144BE9742D8D3F5984ED1E21DD48F098474AF8E51C5336A90E6B3965D4EBE32A60120BAEE687EA5C5E1316E9D03B5BEA47A021C858F386EF998E0C5C3850DF8F18DF1965B3463915B1426023BA69B2FADDC988B695BA139A61B777ED6CD53AEF9CC97B758CE163FFE5846EA9CAEF4EE39425AC098BC4539CA9AD0D0277251F0F13F2556F39B947"
-            )
-            return
-        
-        # 智能解析配置信息
         try:
-            config = await self.parse_config_smart(message_str)
+            # 执行二维码登录
+            qr_filename, login_data = await self.qr_login()
             
-            if not config:
-                yield event.plain_result(
-                    "无法识别配置信息，请确保包含以下内容：\n"
-                    "• userId: 无畏契约用户ID（通常以JA-开头）\n"
-                    "• tid: 认证令牌（长字符串）\n\n"
-                    "支持的格式示例：\n"
-                    "userId:JA-xxxxxxxxxxxxx\n"
-                    "tid:您的tid字符串\n\n"
-                    "或者直接粘贴包含这些信息的文本，我会智能识别"
-                )
-                return
-            
-            # 保存配置
-            await self.save_user_config(
-                user_id,
-                config['userId'],
-                config['tid'],
-                config.get('nickname')
-            )
-            
-            yield event.plain_result(
-                f"配置保存成功！\n"
-                f"用户ID: {config['userId']}\n"
-                f"现在可以使用 /每日商店 查看每日商店了"
-            )
-            
+            if qr_filename and login_data:
+                # 发送二维码图片
+                try:
+                    with open(qr_filename, 'rb') as f:
+                        qr_image_data = f.read()
+                    
+                    # 发送二维码图片和提示
+                    yield event.chain_result([
+                        Image.fromBytes(qr_image_data),
+                        Plain("请在30秒内扫码登录")
+                    ])
+                    
+                    # 保存用户配置
+                    await self.save_user_config(
+                        user_id,
+                        login_data['userId'],
+                        login_data['tid'],
+                        login_data.get('nickname')
+                    )
+                    
+                    # 等待一段时间后确认登录成功
+                    await asyncio.sleep(35)  # 等待35秒确保登录完成
+                    
+                    yield event.plain_result(
+                        f"登录成功！\n"
+                        f"用户ID: {login_data['userId']}\n"
+                        f"现在可以使用 /每日商店 查看每日商店了"
+                    )
+                    
+                except Exception as e:
+                    logger.error(f"发送二维码失败: {e}")
+                    yield event.plain_result("发送二维码失败，请重试")
+                finally:
+                    # 清理二维码文件
+                    if qr_filename and os.path.exists(qr_filename):
+                        os.remove(qr_filename)
+                        logger.info(f"清理二维码文件: {qr_filename}")
+            else:
+                yield event.plain_result("登录失败，请重试")
+                
         except Exception as e:
-            logger.error(f"解析配置失败: {e}")
-            yield event.plain_result("配置解析失败，请检查输入信息是否正确")
+            logger.error(f"二维码登录失败: {e}")
+            yield event.plain_result("登录过程出错，请重试")

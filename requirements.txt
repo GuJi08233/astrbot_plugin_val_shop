@@ -1,8 +1,4 @@
-# AstrBot核心依赖（已包含在主框架中，无需额外安装）
-# requests>=2.28.0          # AstrBot已包含
-# Pillow>=9.0.0             # AstrBot已包含 (pillow>=11.2.1)
-# sqlalchemy>=2.0.0          # AstrBot已包含 (sqlalchemy[asyncio]>=2.0.41)
-
-# 插件额外依赖（无需额外安装，所有依赖AstrBot已包含）
-# 本插件使用的所有依赖项都已在AstrBot核心框架中包含
-# 用户安装插件时无需安装额外的Python包
+# 插件特定依赖（ astrbot框架依赖已安装）
+playwright>=1.56.0
+requests>=2.32.5
+pillow>=12.0.0
