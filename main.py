@@ -615,8 +615,8 @@ class ValorantShopPlugin(Star):
             # 执行二维码登录
             qr_filename, login_data = await self.qr_login()
             
-            if qr_filename and login_data:
-                # 发送二维码图片
+            if qr_filename:
+                # 先发送二维码图片，不等待登录完成
                 try:
                     with open(qr_filename, 'rb') as f:
                         qr_image_data = f.read()
@@ -627,33 +627,33 @@ class ValorantShopPlugin(Star):
                         Plain("请在30秒内扫码登录")
                     ])
                     
-                    # 保存用户配置
-                    await self.save_user_config(
-                        user_id,
-                        login_data['userId'],
-                        login_data['tid'],
-                        login_data.get('nickname')
-                    )
-                    
-                    # 等待一段时间后确认登录成功
-                    await asyncio.sleep(35)  # 等待35秒确保登录完成
-                    
-                    yield event.plain_result(
-                        f"登录成功！\n"
-                        f"用户ID: {login_data['userId']}\n"
-                        f"现在可以使用 /每日商店 查看每日商店了"
-                    )
-                    
+                    # 清理二维码文件
+                    if os.path.exists(qr_filename):
+                        os.remove(qr_filename)
+                        logger.info(f"清理二维码文件: {qr_filename}")
+                        
                 except Exception as e:
                     logger.error(f"发送二维码失败: {e}")
                     yield event.plain_result("发送二维码失败，请重试")
-                finally:
-                    # 清理二维码文件
-                    if qr_filename and os.path.exists(qr_filename):
-                        os.remove(qr_filename)
-                        logger.info(f"清理二维码文件: {qr_filename}")
+                    return
+            
+            # 检查登录是否成功
+            if login_data:
+                # 保存用户配置
+                await self.save_user_config(
+                    user_id,
+                    login_data['userId'],
+                    login_data['tid'],
+                    login_data.get('nickname')
+                )
+                
+                yield event.plain_result(
+                    f"登录成功！\n"
+                    f"用户ID: {login_data['userId']}\n"
+                    f"现在可以使用 /每日商店 查看每日商店了"
+                )
             else:
-                yield event.plain_result("登录失败，请重试")
+                yield event.plain_result("登录失败或超时，请重试")
                 
         except Exception as e:
             logger.error(f"二维码登录失败: {e}")
