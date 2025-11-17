@@ -1,0 +1,8 @@
+{
+    "monitor_time": {
+        "description": "商店监控时间",
+        "type": "string",
+        "hint": "设置每日自动监控的时间，格式为HH:MM，如08:01",
+        "default": "08:01"
+    }
+}

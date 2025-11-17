@@ -25,7 +25,7 @@ from playwright.async_api import async_playwright
 # 配置日志
 logger = logging.getLogger("astrbot")
 
-@register("astrbot_plugin_val_shop", "GuJi08233", "无畏契约每日商店查询插件", "v2.0.1")
+@register("astrbot_plugin_val_shop", "GuJi08233", "无畏契约每日商店查询插件", "v3.0.0")
 class ValorantShopPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
@@ -33,6 +33,9 @@ class ValorantShopPlugin(Star):
         import os
         plugin_dir = os.path.dirname(os.path.abspath(__file__))
         self.font_path = os.path.join(plugin_dir, "fontFamily.ttf")
+        
+        # 加载配置
+        self.config = self._load_config()
         
         # QQ登录配置
         self.LOGIN_URL = "https://xui.ptlogin2.qq.com/cgi-bin/xlogin?pt_enable_pwd=1&appid=716027609&pt_3rd_aid=102061775&daid=381&pt_skey_valid=0&style=35&force_qr=1&autorefresh=1&s_url=http%3A%2F%2Fconnect.qq.com&refer_cgi=m_authorize&ucheck=1&fall_to_wv=1&status_os=12&redirect_uri=auth%3A%2F%2Ftauth.qq.com%2F&client_id=102061775&pf=openmobile_android&response_type=token&scope=all&sdkp=a&sdkv=3.5.17.lite&sign=a6479455d3e49b597350f13f776a6288&status_machine=MjMxMTdSSzY2Qw%3D%3D&switch=1&time=1763280194&show_download_ui=true&h5sig=trobryxo8IPM0GaSQH12mowKG-CY65brFzkK7_-9EW4&loginty=6"
@@ -51,15 +54,277 @@ class ValorantShopPlugin(Star):
                         userId TEXT NOT NULL,
                         tid TEXT NOT NULL,
                         nickname TEXT,
+                        auto_check INTEGER DEFAULT 0,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 """))
+        
+        # 创建监控列表表
+        async with db.get_db() as session:
+            session: AsyncSession
+            async with session.begin():
+                await session.execute(text("""
+                    CREATE TABLE IF NOT EXISTS valo_watchlist (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id TEXT NOT NULL,
+                        item_name TEXT NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (user_id) REFERENCES valo_users(user_id),
+                        UNIQUE(user_id, item_name)
+                    )
+                """))
+        
+        # 启动定时任务调度器
+        await self.setup_scheduler()
+        
         logger.info("无畏契约插件初始化完成")
         
     async def terminate(self):
         """插件终止时清理"""
-        pass
+        # 关闭定时任务调度器
+        if hasattr(self, '_scheduler') and self._scheduler:
+            self._scheduler.shutdown()
+            logger.info("定时任务调度器已关闭")
+
+    def _load_config(self) -> dict:
+        """加载配置文件"""
+        try:
+            config_path = os.path.join(os.path.dirname(__file__), 'config_schema.json')
+            if os.path.exists(config_path):
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    import json
+                    return json.load(f)
+            else:
+                return {}
+        except Exception as e:
+            logger.error(f"加载配置文件失败: {e}")
+            return {}
+
+    def _get_config_value(self, key: str, default=None):
+        """获取配置值"""
+        return self.config.get(key, default)
+
+    async def setup_scheduler(self):
+        """设置定时任务调度器"""
+        try:
+            from apscheduler.schedulers.asyncio import AsyncIOScheduler
+            from apscheduler.triggers.cron import CronTrigger
+            
+            self._scheduler = AsyncIOScheduler()
+            
+            # 从配置中获取监控时间
+            monitor_time = self._get_config_value('monitor_time', '08:01')
+            hour, minute = map(int, monitor_time.split(':'))
+            
+            # 添加定时任务
+            self._scheduler.add_job(
+                self.daily_auto_check,
+                CronTrigger(hour=hour, minute=minute),
+                id='daily_shop_check',
+                replace_existing=True
+            )
+            
+            self._scheduler.start()
+            logger.info(f"定时任务调度器已启动，每天{monitor_time}执行商店监控")
+            
+        except Exception as e:
+            logger.error(f"定时任务调度器启动失败: {e}")
+
+    async def daily_auto_check(self):
+        """每日自动检查商店（定时任务）"""
+        logger.info("开始执行每日商店自动检查任务")
+        
+        try:
+            # 获取所有开启自动查询的用户
+            db = self.context.get_db()
+            async with db.get_db() as session:
+                session: AsyncSession
+                result = await session.execute(
+                    text("SELECT user_id FROM valo_users WHERE auto_check = 1")
+                )
+                users = result.fetchall()
+                
+                if not users:
+                    logger.info("没有用户开启自动查询")
+                    return
+                
+                logger.info(f"找到 {len(users)} 个用户需要检查")
+                
+                # 遍历每个用户
+                for row in users:
+                    user_id = row[0]
+                    try:
+                        await self.check_user_watchlist(user_id)
+                    except Exception as e:
+                        logger.error(f"检查用户 {user_id} 的监控列表时出错: {e}")
+                        continue
+                        
+        except Exception as e:
+            logger.error(f"每日自动检查任务执行失败: {e}")
+
+    async def check_user_watchlist(self, user_id: str):
+        """检查单个用户的监控列表"""
+        logger.info(f"检查用户 {user_id} 的监控列表")
+        
+        # 获取用户配置
+        user_config = await self.get_user_config(user_id)
+        if not user_config:
+            logger.warning(f"用户 {user_id} 未绑定账户")
+            return
+        
+        # 获取监控列表
+        watchlist = await self.get_watchlist(user_id)
+        if not watchlist:
+            logger.info(f"用户 {user_id} 的监控列表为空")
+            return
+        
+        # 获取商店商品
+        goods_list = self.get_shop_items_raw(user_id, user_config)
+        if not goods_list:
+            logger.info(f"用户 {user_id} 的商店数据为空")
+            return
+        
+        # 匹配监控商品
+        matched_items = []
+        watchlist_names = [item['item_name'] for item in watchlist]
+        
+        for goods in goods_list:
+            goods_name = goods.get('goods_name', '')
+            for watch_name in watchlist_names:
+                if watch_name in goods_name:
+                    matched_items.append({
+                        'name': goods_name,
+                        'price': goods.get('rmb_price', '0')
+                    })
+                    break
+        
+        # 如果有匹配的商品，发送通知
+        if matched_items:
+            logger.info(f"用户 {user_id} 有 {len(matched_items)} 个监控商品上架")
+            await self.send_notification(user_id, matched_items)
+        else:
+            logger.info(f"用户 {user_id} 没有监控商品上架")
+
+    async def send_notification(self, user_id: str, matched_items: list):
+        """发送监控通知"""
+        try:
+            # 获取当前日期
+            from datetime import datetime
+            current_date = datetime.now().strftime("%Y-%m-%d")
+            
+            # 构建通知内容
+            items_text = "\n".join([f"  🎯 {item['name']} ({item['price']})" for item in matched_items])
+            
+            notification_text = (
+                f"🎉 {current_date} 商店监控通知！\n\n"
+                f"✨ 以下监控商品已上架：\n"
+                f"{items_text}\n\n"
+                f"💰 快去看看吧！使用 /每日商店 查看详情"
+            )
+            
+            # 使用context的send_message方法发送通知
+            await self.context.send_message(
+                "private",  # 假设为私聊类型，根据实际情况调整
+                user_id,
+                notification_text
+            )
+            logger.info(f"已发送通知给用户 {user_id}")
+            
+        except Exception as e:
+            logger.error(f"发送通知失败: {e}")
+
+    async def add_watch_item(self, user_id: str, item_name: str) -> bool:
+        """添加监控项"""
+        try:
+            db = self.context.get_db()
+            async with db.get_db() as session:
+                session: AsyncSession
+                async with session.begin():
+                    result = await session.execute(
+                        text("SELECT COUNT(*) FROM valo_watchlist WHERE user_id = :user_id AND item_name = :item_name"),
+                        {"user_id": user_id, "item_name": item_name}
+                    )
+                    count = result.scalar()
+                    
+                    if count > 0:
+                        return False  # 已存在
+                    
+                    await session.execute(
+                        text("INSERT INTO valo_watchlist (user_id, item_name) VALUES (:user_id, :item_name)"),
+                        {"user_id": user_id, "item_name": item_name}
+                    )
+                    logger.info(f"用户 {user_id} 添加监控项: {item_name}")
+                    return True
+                    
+        except Exception as e:
+            logger.error(f"添加监控项失败: {e}")
+            return False
+
+    async def remove_watch_item(self, user_id: str, item_name: str) -> bool:
+        """删除监控项"""
+        try:
+            db = self.context.get_db()
+            async with db.get_db() as session:
+                session: AsyncSession
+                async with session.begin():
+                    result = await session.execute(
+                        text("DELETE FROM valo_watchlist WHERE user_id = :user_id AND item_name = :item_name"),
+                        {"user_id": user_id, "item_name": item_name}
+                    )
+                    
+                    if session.rowcount > 0:
+                        logger.info(f"用户 {user_id} 删除监控项: {item_name}")
+                        return True
+                    else:
+                        logger.warning(f"用户 {user_id} 尝试删除不存在的监控项: {item_name}")
+                        return False
+                        
+        except Exception as e:
+            logger.error(f"删除监控项失败: {e}")
+            return False
+
+    async def get_watchlist(self, user_id: str) -> list:
+        """获取用户监控列表"""
+        try:
+            db = self.context.get_db()
+            async with db.get_db() as session:
+                session: AsyncSession
+                result = await session.execute(
+                    text("SELECT item_name, created_at FROM valo_watchlist WHERE user_id = :user_id ORDER BY created_at"),
+                    {"user_id": user_id}
+                )
+                rows = result.fetchall()
+                
+                watchlist = []
+                for row in rows:
+                    watchlist.append({
+                        'item_name': row[0],
+                        'created_at': row[1]
+                    })
+                
+                logger.info(f"用户 {user_id} 的监控列表: {len(watchlist)} 项")
+                return watchlist
+                
+        except Exception as e:
+            logger.error(f"获取监控列表失败: {e}")
+            return []
+
+    async def update_auto_check(self, user_id: str, status: int):
+        """更新用户自动查询状态"""
+        try:
+            db = self.context.get_db()
+            async with db.get_db() as session:
+                session: AsyncSession
+                async with session.begin():
+                    await session.execute(
+                        text("UPDATE valo_users SET auto_check = :status, updated_at = CURRENT_TIMESTAMP WHERE user_id = :user_id"),
+                        {"status": status, "user_id": user_id}
+                    )
+                    logger.info(f"用户 {user_id} 自动查询状态更新为: {status}")
+                    
+        except Exception as e:
+            logger.error(f"更新自动查询状态失败: {e}")
 
     async def save_qr_screenshot(self, page, filename=None):
         """保存二维码截图"""
@@ -567,9 +832,9 @@ class ValorantShopPlugin(Star):
             logger.error(f"下载图片失败: {e}")
             return None
 
-    def get_shop_data(self, user_id: str, user_config: Dict[str, Any]) -> Optional[str]:
-        """获取商店信息并生成图片的base64编码"""
-        logger.info(f"开始获取商店数据，user_id: {user_id}, userId: {user_config.get('userId', '未知')}")
+    def get_shop_items_raw(self, user_id: str, user_config: Dict[str, Any]) -> Optional[list]:
+        """获取商店原始商品数据"""
+        logger.info(f"开始获取商店原始数据，user_id: {user_id}, userId: {user_config.get('userId', '未知')}")
         url = "https://app.mval.qq.com/go/mlol_store/agame/user_store"
         
         # 检查配置是否完整
@@ -592,176 +857,201 @@ class ValorantShopPlugin(Star):
         
         data = {}
         
-        try:
-            logger.info(f"发送API请求到 {url}")
-            response = requests.post(url, headers=headers, json=data, timeout=15)
-            response.raise_for_status()
-            
-            response_data = response.json()
-            
-            # 打印完整的API响应用于调试
-            logger.info(f"API响应: {json.dumps(response_data, indent=2, ensure_ascii=False)}")
-            
-            if response_data['result'] == 1001 or response_data['result'] == 1003 or response_data['result'] == 999999:
-                err_msg = response_data.get('errMsg', response_data.get('msg', ''))
-                logger.error(f"API请求失败，错误码: {response_data['result']}，错误信息: {err_msg}")
-                return None
+        # 设置固定的重试配置
+        max_retries = 3
+        timeout = 15
+        
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"发送API请求到 {url} (尝试 {attempt + 1}/{max_retries})")
+                response = requests.post(url, headers=headers, json=data, timeout=timeout)
+                response.raise_for_status()
                 
-            if 'data' not in response_data:
-                logger.error("API返回数据格式不正确，缺少'data'字段")
-                return None
+                response_data = response.json()
                 
-            if not response_data['data']:
-                logger.info("API返回数据为空")
-                return None
+                # 打印完整的API响应用于调试
+                logger.info(f"API响应: {json.dumps(response_data, indent=2, ensure_ascii=False)}")
                 
-            if not isinstance(response_data['data'], list):
-                data = response_data['data']
-            else:
-                data = response_data['data'][0]
+                if response_data['result'] == 1001 or response_data['result'] == 1003 or response_data['result'] == 999999:
+                    err_msg = response_data.get('errMsg', response_data.get('msg', ''))
+                    logger.error(f"API请求失败，错误码: {response_data['result']}，错误信息: {err_msg}")
+                    return None
                 
-            goods_list = data.get('list', [])
-            
-            if not goods_list:
-                logger.info("今日商店没有商品")
-                return None
+                if 'data' not in response_data:
+                    logger.error("API返回数据格式不正确，缺少'data'字段")
+                    return None
                 
-            logger.info(f"获取到 {len(goods_list)} 件商品")
-            
-            # 处理商品图片
-            processed_images = []
-            
-            for i, goods in enumerate(goods_list):
-                logger.info(f"处理商品 {i+1}/{len(goods_list)}: {goods['goods_name']}")
+                if not response_data['data']:
+                    logger.info("API返回数据为空")
+                    return None
                 
-                # 下载背景图和商品图
-                bg_img_url = goods.get('bg_image')
-                goods_img_url = goods.get('goods_pic')
+                if not isinstance(response_data['data'], list):
+                    data = response_data['data']
+                else:
+                    data = response_data['data'][0]
                 
-                if not bg_img_url or not goods_img_url:
-                    logger.error("商品缺少图片URL")
-                    continue
+                goods_list = data.get('list', [])
+                
+                if not goods_list:
+                    logger.info("今日商店没有商品")
+                    return None
                     
-                bg_img_path = self.download_image(bg_img_url, user_id, 'bg.jpg')
-                goods_img_path = self.download_image(goods_img_url, user_id, 'goods.jpg')
+                logger.info(f"获取到 {len(goods_list)} 件商品")
                 
-                if not bg_img_path or not goods_img_path:
-                    logger.error("图片下载失败，跳过该商品")
+                # 返回原始商品数据
+                return goods_list
+                
+            except requests.RequestException as e:
+                logger.error(f"网络请求失败 (尝试 {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
                     continue
-                    
-                # 处理图片
+                return None
+            except Exception as e:
+                logger.error(f"处理失败 (尝试 {attempt + 1}/{max_retries}): {e}", exc_info=True)
+                if attempt < max_retries - 1:
+                    continue
+                return None
+        
+        logger.error(f"API请求失败，已达到最大重试次数 {max_retries}")
+        return None
+
+    def get_shop_data(self, user_id: str, user_config: Dict[str, Any]) -> Optional[str]:
+        """获取商店信息并生成图片的base64编码"""
+        logger.info(f"开始获取商店数据，user_id: {user_id}, userId: {user_config.get('userId', '未知')}")
+        
+        # 调用get_shop_items_raw获取原始商品数据
+        goods_list = self.get_shop_items_raw(user_id, user_config)
+        
+        if not goods_list:
+            return None
+                
+        # 处理商品图片
+        processed_images = []
+        
+        for i, goods in enumerate(goods_list):
+            logger.info(f"处理商品 {i+1}/{len(goods_list)}: {goods['goods_name']}")
+            
+            # 下载背景图和商品图
+            bg_img_url = goods.get('bg_image')
+            goods_img_url = goods.get('goods_pic')
+            
+            if not bg_img_url or not goods_img_url:
+                logger.error("商品缺少图片URL")
+                continue
+                
+            bg_img_path = self.download_image(bg_img_url, user_id, 'bg.jpg')
+            goods_img_path = self.download_image(goods_img_url, user_id, 'goods.jpg')
+            
+            if not bg_img_path or not goods_img_path:
+                logger.error("图片下载失败，跳过该商品")
+                continue
+                
+            # 处理图片
+            try:
+                # 打开图片 - 使用PILImage而不是Image
+                img1 = PILImage.open(bg_img_path)
+                img2 = PILImage.open(goods_img_path)
+                
+                # 调整第二张图片的大小
+                height = 180
+                width = int((img2.width * height) / img2.height)
+                img2_resized = img2.resize((width, height))
+                
+                # 计算居中粘贴的位置
+                x = (img1.width - img2_resized.width) // 2
+                y = (img1.height - img2_resized.height) // 2
+                
+                # 创建新图像 - 使用PILImage而不是Image
+                new_img = PILImage.new('RGB', img1.size)
+                new_img.paste(img1, (0, 0))
+                
+                # 粘贴商品图片 (支持透明通道)
+                if img2_resized.mode in ('RGBA', 'LA'):
+                    new_img.paste(img2_resized, (x, y), mask=img2_resized)
+                else:
+                    new_img.paste(img2_resized, (x, y))
+                
+                # 绘制文字
+                draw = ImageDraw.Draw(new_img)
+                
+                # 加载字体
                 try:
-                    # 打开图片 - 使用PILImage而不是Image
-                    img1 = PILImage.open(bg_img_path)
-                    img2 = PILImage.open(goods_img_path)
-                    
-                    # 调整第二张图片的大小
-                    height = 180
-                    width = int((img2.width * height) / img2.height)
-                    img2_resized = img2.resize((width, height))
-                    
-                    # 计算居中粘贴的位置
-                    x = (img1.width - img2_resized.width) // 2
-                    y = (img1.height - img2_resized.height) // 2
-                    
-                    # 创建新图像 - 使用PILImage而不是Image
-                    new_img = PILImage.new('RGB', img1.size)
-                    new_img.paste(img1, (0, 0))
-                    
-                    # 粘贴商品图片 (支持透明通道)
-                    if img2_resized.mode in ('RGBA', 'LA'):
-                        new_img.paste(img2_resized, (x, y), mask=img2_resized)
-                    else:
-                        new_img.paste(img2_resized, (x, y))
-                    
-                    # 绘制文字
-                    draw = ImageDraw.Draw(new_img)
-                    
-                    # 加载字体
-                    try:
-                        font = ImageFont.truetype(self.font_path, 36)
-                    except IOError:
-                        logger.warning("无法加载指定字体，使用默认字体")
-                        font = ImageFont.load_default()
-                    
-                    # 商品名称
-                    text = goods['goods_name']
-                    text_bbox = draw.textbbox((0, 0), text, font=font)
-                    text_width = text_bbox[2] - text_bbox[0]
-                    text_position = (36, new_img.height - 50)
-                    text_color = (255, 255, 255)  # 白色
-                    draw.text(text_position, text, fill=text_color, font=font)
-                    
-                    # 商品价格
-                    price = goods.get('rmb_price', '0')
-                    price_bbox = draw.textbbox((0, 0), price, font=font)
-                    price_width = price_bbox[2] - price_bbox[0]
-                    text_position = (new_img.width - price_width - 36, new_img.height - 50)
-                    draw.text(text_position, price, fill=text_color, font=font)
-                    
-                    # 保存处理后的图片
-                    processed_image_path = os.path.join(f"./temp/valo/{user_id}", f"{goods['goods_id']}.jpg")
-                    new_img.save(processed_image_path)
-                    processed_images.append(processed_image_path)
-                    logger.info(f"商品 {goods['goods_name']} 处理完成")
-                    
-                except Exception as e:
-                    logger.error(f"图片处理失败: {e}")
-                finally:
-                    # 清理临时文件
-                    for path in [bg_img_path, goods_img_path]:
-                        if path and os.path.exists(path):
-                            os.remove(path)
-            
-            if not processed_images:
-                logger.error("没有商品图片处理成功")
-                return None
+                    font = ImageFont.truetype(self.font_path, 36)
+                except IOError:
+                    logger.warning("无法加载指定字体，使用默认字体")
+                    font = ImageFont.load_default()
                 
-            logger.info(f"成功处理 {len(processed_images)} 张商品图片")
-            
-            # 合并所有处理后的图片
-            logger.info("合并所有图片")
-            images = [PILImage.open(img_path) for img_path in processed_images]
-            
-            # 计算合并后的图片尺寸
-            max_width = max(img.width for img in images)
-            total_height = sum(img.height for img in images) + (len(images) - 1) * 20  # 20px 间距
-            
-            # 创建合并后的图片
-            merged_image = PILImage.new('RGB', (max_width, total_height), color='white')
-            
-            # 将所有图片堆叠在一起
-            y_offset = 0
-            for img in images:
-                merged_image.paste(img, (0, y_offset))
-                y_offset += img.height + 20
-            
-            # 保存合并后的图片
-            merged_image_path = f"./temp/valo/{user_id}/merged.jpg"
-            merged_image.save(merged_image_path)
-            logger.info(f"合并图片保存到: {merged_image_path}")
-            
-            # 转换为base64
-            with open(merged_image_path, 'rb') as f:
-                image_bytes = f.read()
-                base64_data = base64.b64encode(image_bytes).decode('utf-8')
-                logger.info(f"图片转换为base64，原始大小: {len(image_bytes)} 字节, base64长度: {len(base64_data)}")
-            
-            # 清理临时目录
-            temp_dir = f"./temp/valo/{user_id}"
-            if os.path.exists(temp_dir):
-                shutil.rmtree(temp_dir)
-                logger.info(f"清理临时目录: {temp_dir}")
+                # 商品名称
+                text = goods['goods_name']
+                text_bbox = draw.textbbox((0, 0), text, font=font)
+                text_width = text_bbox[2] - text_bbox[0]
+                text_position = (36, new_img.height - 50)
+                text_color = (255, 255, 255)  # 白色
+                draw.text(text_position, text, fill=text_color, font=font)
                 
-            logger.info("商店图片生成完成")
-            return base64_data
+                # 商品价格
+                price = goods.get('rmb_price', '0')
+                price_bbox = draw.textbbox((0, 0), price, font=font)
+                price_width = price_bbox[2] - price_bbox[0]
+                text_position = (new_img.width - price_width - 36, new_img.height - 50)
+                draw.text(text_position, price, fill=text_color, font=font)
+                
+                # 保存处理后的图片
+                processed_image_path = os.path.join(f"./temp/valo/{user_id}", f"{goods['goods_id']}.jpg")
+                new_img.save(processed_image_path)
+                processed_images.append(processed_image_path)
+                logger.info(f"商品 {goods['goods_name']} 处理完成")
+                
+            except Exception as e:
+                logger.error(f"图片处理失败: {e}")
+            finally:
+                # 清理临时文件
+                for path in [bg_img_path, goods_img_path]:
+                    if path and os.path.exists(path):
+                        os.remove(path)
+        
+        if not processed_images:
+            logger.error("没有商品图片处理成功")
+            return None
             
-        except requests.RequestException as e:
-            logger.error(f"网络请求失败: {e}")
-            return None
-        except Exception as e:
-            logger.error(f"处理失败: {e}", exc_info=True)
-            return None
+        logger.info(f"成功处理 {len(processed_images)} 张商品图片")
+        
+        # 合并所有处理后的图片
+        logger.info("合并所有图片")
+        images = [PILImage.open(img_path) for img_path in processed_images]
+        
+        # 计算合并后的图片尺寸
+        max_width = max(img.width for img in images)
+        total_height = sum(img.height for img in images) + (len(images) - 1) * 20  # 20px 间距
+        
+        # 创建合并后的图片
+        merged_image = PILImage.new('RGB', (max_width, total_height), color='white')
+        
+        # 将所有图片堆叠在一起
+        y_offset = 0
+        for img in images:
+            merged_image.paste(img, (0, y_offset))
+            y_offset += img.height + 20
+        
+        # 保存合并后的图片
+        merged_image_path = f"./temp/valo/{user_id}/merged.jpg"
+        merged_image.save(merged_image_path)
+        logger.info(f"合并图片保存到: {merged_image_path}")
+        
+        # 转换为base64
+        with open(merged_image_path, 'rb') as f:
+            image_bytes = f.read()
+            base64_data = base64.b64encode(image_bytes).decode('utf-8')
+            logger.info(f"图片转换为base64，原始大小: {len(image_bytes)} 字节, base64长度: {len(base64_data)}")
+        
+        # 清理临时目录
+        temp_dir = f"./temp/valo/{user_id}"
+        if os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir)
+            logger.info(f"清理临时目录: {temp_dir}")
+            
+        logger.info("商店图片生成完成")
+        return base64_data
 
     async def get_user_config(self, user_id: str) -> Optional[Dict[str, Any]]:
         """从数据库获取用户配置"""
@@ -770,16 +1060,17 @@ class ValorantShopPlugin(Star):
         async with db.get_db() as session:
             session: AsyncSession
             result = await session.execute(
-                text("SELECT userId, tid, nickname FROM valo_users WHERE user_id = :user_id"),
+                text("SELECT userId, tid, nickname, auto_check FROM valo_users WHERE user_id = :user_id"),
                 {"user_id": user_id}
             )
             row = result.fetchone()
             if row:
-                logger.info(f"找到用户配置: userId={row[0]}, tid={row[1][:20]}...")
+                logger.info(f"找到用户配置: userId={row[0]}, tid={row[1][:20]}..., auto_check={row[3]}")
                 return {
                     'userId': row[0],
                     'tid': row[1],
-                    'nickname': row[2]
+                    'nickname': row[2],
+                    'auto_check': row[3] if row[3] is not None else 0
                 }
             else:
                 logger.warning(f"未找到用户 {user_id} 的配置")
@@ -905,6 +1196,88 @@ class ValorantShopPlugin(Star):
         except Exception as e:
             logger.error(f"测试配置有效性时出错: {e}")
             return False
+
+    @filter.command("商店监控")
+    async def watchlist_command(self, event: AstrMessageEvent):
+        """商店监控指令主入口"""
+        user_id = event.get_sender_id()
+        message = event.get_message_str()
+        
+        # 解析指令参数
+        parts = message.split(maxsplit=2)
+        
+        if len(parts) < 2:
+            # 显示帮助信息
+            user_config = await self.get_user_config(user_id)
+            auto_check_status = "已开启" if user_config and user_config.get('auto_check') == 1 else "已关闭"
+            
+            help_text = (
+                "🎯 商店监控功能\n\n"
+                "可用子命令：\n"
+                "• /商店监控 添加 \"皮肤 武器\" - 添加监控项\n"
+                "• /商店监控 删除 \"皮肤 武器\" - 删除监控项\n"
+                "• /商店监控 列表 - 查看监控列表\n"
+                "• /商店监控 开启 - 启用自动查询\n"
+                "• /商店监控 关闭 - 停用自动查询\n\n"
+                f"当前自动查询状态：{auto_check_status}\n"
+                f"⏰ 自动查询时间：每天{self._get_config_value('monitor_time', '08:01')}"
+            )
+            yield event.plain_result(help_text)
+            return
+        
+        sub_command = parts[1].strip()
+        
+        if sub_command == "添加" and len(parts) >= 3:
+            # 添加监控项
+            item_name = parts[2].strip().strip('"')
+            if not item_name:
+                yield event.plain_result("❌ 请提供商品名称，例如：/商店监控 添加 \"侦察力量 幻象\"")
+                return
+            
+            success = await self.add_watch_item(user_id, item_name)
+            if success:
+                yield event.plain_result(f"✅ 已添加 \"{item_name}\" 到监控列表")
+            else:
+                yield event.plain_result(f"⚠️ \"{item_name}\" 已在监控列表中")
+                
+        elif sub_command == "删除" and len(parts) >= 3:
+            # 删除监控项
+            item_name = parts[2].strip().strip('"')
+            if not item_name:
+                yield event.plain_result("❌ 请提供商品名称，例如：/商店监控 删除 \"侦察力量 幻象\"")
+                return
+            
+            success = await self.remove_watch_item(user_id, item_name)
+            if success:
+                yield event.plain_result(f"✅ 已从监控列表删除 \"{item_name}\"")
+            else:
+                yield event.plain_result(f"❌ 监控列表中不存在 \"{item_name}\"")
+                
+        elif sub_command == "列表":
+            # 查看监控列表
+            watchlist = await self.get_watchlist(user_id)
+            if not watchlist:
+                yield event.plain_result("🎯 您的监控列表为空\n使用 /商店监控 添加 \"商品名称\" 来添加监控项")
+            else:
+                items_text = "\n".join([f"  • {item['item_name']}" for item in watchlist])
+                yield event.plain_result(f"🎯 您的监控列表 ({len(watchlist)}项)：\n{items_text}")
+                
+        elif sub_command == "开启":
+            # 开启自动查询
+            await self.update_auto_check(user_id, 1)
+            yield event.plain_result(
+                f"✅ 每日自动查询已开启\n"
+                f"⏰ 将在每天{self._get_config_value('monitor_time', '08:01')}执行\n"
+                "📢 查询到商品才会通知，无匹配不打扰"
+            )
+            
+        elif sub_command == "关闭":
+            # 关闭自动查询
+            await self.update_auto_check(user_id, 0)
+            yield event.plain_result("✅ 每日自动查询已关闭")
+            
+        else:
+            yield event.plain_result("❌ 未知子命令，请使用 /商店监控 查看帮助")
 
     @filter.command("瓦")
     async def bind_wallet_command(self, event: AstrMessageEvent):
