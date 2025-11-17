@@ -209,7 +209,29 @@ class ValorantShopPlugin(Star):
                         '--hide-scrollbars',
                         '--mute-audio',
                         '--no-zygote',
-                        '--single-process'
+                        '--single-process',
+                        '--disable-ipc-flooding-protection',
+                        '--disable-logging',
+                        '--disable-permissions-api',
+                        '--disable-notifications',
+                        '--disable-popup-blocking',
+                        '--disable-prompt-on-repost',
+                        '--disable-component-extensions-with-background-pages',
+                        '--disable-background-fetch',
+                        '--disable-background-sync',
+                        '--disable-client-side-phishing-detection',
+                        '--disable-default-apps',
+                        '--disable-hang-monitor',
+                        '--disable-popup-blocking',
+                        '--disable-prompt-on-repost',
+                        '--disable-web-resources',
+                        '--enable-automation',
+                        '--no-default-browser-check',
+                        '--no-first-run',
+                        '--disable-features=TranslateUI',
+                        '--disable-features=Translate',
+                        '--disable-blink-features=AutomationControlled',
+                        '--disable-features=IsolateOrigins,site-per-process'
                     ]
                 )
                 logger.info("✅ Playwright Chromium 启动成功")
@@ -242,10 +264,40 @@ class ValorantShopPlugin(Star):
             )
             page = await context.new_page()
 
-            await page.goto(self.LOGIN_URL)
+            # 使用更宽松的页面加载策略
+            try:
+                await page.goto(self.LOGIN_URL, wait_until="domcontentloaded", timeout=30000)
+            except Exception as e:
+                logger.warning(f"页面加载失败，尝试备用方案: {e}")
+                # 尝试不等待任何加载状态
+                await page.goto(self.LOGIN_URL, wait_until="commit", timeout=20000)
             
-            # 等待二维码加载
-            await page.wait_for_selector("#qrimg", state="visible", timeout=20000)
+            # 等待页面完全加载后再查找二维码
+            try:
+                await page.wait_for_load_state("networkidle", timeout=15000)
+            except Exception as e:
+                logger.warning(f"等待网络空闲超时，继续尝试查找二维码: {e}")
+            
+            # 尝试多种方式等待二维码加载
+            qr_element = None
+            for attempt in range(3):
+                try:
+                    logger.info(f"尝试查找二维码元素 (第 {attempt + 1} 次)")
+                    qr_element = await page.wait_for_selector("#qrimg", state="visible", timeout=10000)
+                    if qr_element:
+                        break
+                except Exception as e:
+                    logger.warning(f"第 {attempt + 1} 次查找二维码失败: {e}")
+                    if attempt < 2:
+                        # 等待一下再重试
+                        await asyncio.sleep(2)
+                        # 尝试刷新页面
+                        await page.reload(wait_until="domcontentloaded", timeout=15000)
+            
+            if not qr_element:
+                logger.error("无法找到二维码元素")
+                await browser.close()
+                return None, None, None
             qr_img_element = await page.query_selector("#qrimg")
             qr_img_src = await qr_img_element.get_attribute("src")
             if not qr_img_src:
