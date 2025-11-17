@@ -18,7 +18,7 @@
 ### 方式一：直接复制
 ```bash
 # 1. 克隆或下载插件
-git clone https://github.com/GuJi08033/astrbot_plugin_val_shop
+git clone https://github.com/GuJi08233/astrbot_plugin_val_shop
 
 # 2. 复制到AstrBot插件目录
 cp -r astrbot_plugin_val_shop /path/to/astrbot/data/plugins/
@@ -32,7 +32,7 @@ playwright install chromium
 ### 方式二：插件管理器
 ```bash
 # 1. 使用AstrBot插件管理器安装
-astrbot plug install https://github.com/GuJi08033/astrbot_plugin_val_shop
+astrbot plug install https://github.com/GuJi08233/astrbot_plugin_val_shop
 
 # 2. 安装浏览器依赖
 playwright install chromium
@@ -191,9 +191,9 @@ A: 确保聊天平台支持@功能，部分平台可能不支持
 ## 开发信息
 
 - **插件名称**：astrbot_plugin_val_shop
-- **版本**：v2.0.0
-- **作者**：GuJi08033
-- **仓库**：https://github.com/GuJi08033/astrbot_plugin_val_shop
+- **版本**：v2.0.1
+- **作者**：GuJi08233
+- **仓库**：https://github.com/GuJi08233/astrbot_plugin_val_shop
 - **依赖**：playwright>=1.56.0, requests>=2.32.5, pillow>=12.0.0
 
 ## 更新日志

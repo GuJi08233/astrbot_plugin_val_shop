@@ -25,7 +25,7 @@ from playwright.async_api import async_playwright
 # 配置日志
 logger = logging.getLogger("astrbot")
 
-@register("astrbot_plugin_val_shop", "YourName", "无畏契约每日商店查询插件", "v1.0.0")
+@register("astrbot_plugin_val_shop", "GuJi08233", "无畏契约每日商店查询插件", "v2.0.1")
 class ValorantShopPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
@@ -866,12 +866,78 @@ class ValorantShopPlugin(Star):
             else:
                 yield event.plain_result("获取商店信息失败，可能是配置过期或网络问题，请使用 /瓦 重新绑定")
 
+    async def test_config_validity(self, user_id: str, user_config: Dict[str, Any]) -> bool:
+        """测试用户配置是否有效"""
+        logger.info(f"测试用户配置有效性，user_id: {user_id}")
+        try:
+            # 调用商店API测试配置有效性
+            url = "https://app.mval.qq.com/go/mlol_store/agame/user_store"
+            
+            headers = {
+                "Accept": "*/*",
+                "Upload-Draft-Interop-Version": "5",
+                "Accept-Language": "zh-CN,zh;q=0.9",
+                "Accept-Encoding": "gzip, deflate, br",
+                "Content-Type": "application/json",
+                "User-Agent": "mval/2.3.0.10050 Channel/5 Manufacturer/Xiaomi  Mozilla/5.0 (Linux; Android 14; 23078RKD5C Build/UP1A.230905.011; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/140.0.7339.207 Mobile Safari/537.36",
+                "Connection": "keep-alive",
+                "Upload-Complete": "?1",
+                "GH-HEADER": "1-2-105-160-0",
+                "Cookie": f"clientType=9; uin=o105940478; appid=102061775; acctype=qc; openid=03A18A61C761D3C44890E2992BB868CE; access_token=551176E5981C1F5422A08C227D193827; userId={user_config['userId']}; accountType=5; tid={user_config['tid']}"
+            }
+            
+            data = {}
+            response = requests.post(url, headers=headers, json=data, timeout=10)
+            response.raise_for_status()
+            
+            response_data = response.json()
+            logger.info(f"配置有效性测试API响应: {response_data.get('result', '未知')}")
+            
+            # 检查API返回结果
+            if response_data.get('result') == 0:
+                logger.info("✅ 用户配置有效")
+                return True
+            else:
+                err_msg = response_data.get('errMsg', response_data.get('msg', '未知错误'))
+                logger.warning(f"❌ 用户配置无效: {err_msg}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"测试配置有效性时出错: {e}")
+            return False
+
     @filter.command("瓦")
     async def bind_wallet_command(self, event: AstrMessageEvent):
         """绑定无畏契约钱包指令 - 发送二维码登录"""
         user_id = event.get_sender_id()
         
-        yield event.plain_result("正在生成登录二维码，请稍候...")
+        # 检查用户是否已绑定
+        user_config = await self.get_user_config(user_id)
+        
+        if user_config:
+            # 用户已绑定，测试配置有效性
+            logger.info(f"用户 {user_id} 已绑定，测试配置有效性...")
+            yield event.plain_result("检测到您已绑定账户，正在测试配置有效性...")
+            
+            is_valid = await self.test_config_validity(user_id, user_config)
+            
+            if is_valid:
+                # 配置有效
+                logger.info(f"用户 {user_id} 的配置有效")
+                yield event.plain_result(
+                    f"✅ 您的账户已绑定且配置有效！\n"
+                    f"用户ID: {user_config['userId']}\n"
+                    f"可以直接使用 /每日商店 查看商店内容"
+                )
+                return
+            else:
+                # 配置无效，需要重新登录
+                logger.warning(f"用户 {user_id} 的配置无效，需要重新登录")
+                yield event.plain_result("⚠️ 您的配置已失效，需要重新登录...")
+        else:
+            # 用户未绑定，显示提示
+            logger.info(f"用户 {user_id} 未绑定，开始绑定流程")
+            yield event.plain_result("正在生成登录二维码，请稍候...")
         
         # 添加重试机制
         max_retries = 3
