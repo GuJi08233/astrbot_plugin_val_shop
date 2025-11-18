@@ -219,19 +219,20 @@ class ValorantShopPlugin(Star):
             
             # 构建通知内容
             items_text = "\n".join([f"  🎯 {item['name']} ({item['price']})" for item in matched_items])
+            matched_names = [item['name'] for item in matched_items]
             
             notification_text = (
                 f"🎉 {current_date} 商店监控通知！\n\n"
                 f"✨ 以下监控商品已上架：\n"
                 f"{items_text}\n\n"
-                f"💰 快去看看吧！使用 /每日商店 查看详情"
+                f"💰 快去看看吧！使用 /每日商店 查看详情\n\n"
+                f"🔍 匹配的商品：{', '.join(matched_names)}"
             )
             
             # 使用context的send_message方法发送通知
             await self.context.send_message(
-                "private",  # 假设为私聊类型，根据实际情况调整
-                user_id,
-                notification_text
+                notification_text,  # 只传递消息内容
+                user_id
             )
             logger.info(f"已发送通知给用户 {user_id}")
             
