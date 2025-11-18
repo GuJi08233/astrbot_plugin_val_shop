@@ -193,14 +193,20 @@ class ValorantShopPlugin(Star):
         matched_items = []
         watchlist_names = [item['item_name'] for item in watchlist]
         
+        logger.info(f"监控列表: {watchlist_names}")
+        logger.info(f"商店商品: {[goods.get('goods_name', '') for goods in goods_list]}")
+        
         for goods in goods_list:
             goods_name = goods.get('goods_name', '')
+            logger.info(f"检查商品: {goods_name}")
             for watch_name in watchlist_names:
-                if watch_name in goods_name:
+                logger.info(f"匹配监控项: {watch_name} vs {goods_name}")
+                if watch_name in goods_name or goods_name in watch_name:
                     matched_items.append({
                         'name': goods_name,
                         'price': goods.get('rmb_price', '0')
                     })
+                    logger.info(f"匹配成功: {goods_name}")
                     break
         
         # 如果有匹配的商品，发送通知
