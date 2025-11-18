@@ -159,7 +159,8 @@ class ValorantShopPlugin(Star):
                 for row in users:
                     user_id = row[0]
                     try:
-                        await self.check_user_watchlist(user_id)
+                        # 定时任务中，我们无法获取unified_msg_origin，所以传递None
+                        await self.check_user_watchlist(user_id, None)
                     except Exception as e:
                         logger.error(f"检查用户 {user_id} 的监控列表时出错: {e}")
                         continue
@@ -167,7 +168,7 @@ class ValorantShopPlugin(Star):
         except Exception as e:
             logger.error(f"每日自动检查任务执行失败: {e}")
 
-    async def check_user_watchlist(self, user_id: str):
+    async def check_user_watchlist(self, user_id: str, unified_msg_origin: str = None):
         """检查单个用户的监控列表"""
         logger.info(f"检查用户 {user_id} 的监控列表")
         
@@ -212,11 +213,11 @@ class ValorantShopPlugin(Star):
         # 如果有匹配的商品，发送通知
         if matched_items:
             logger.info(f"用户 {user_id} 有 {len(matched_items)} 个监控商品上架")
-            await self.send_notification(user_id, matched_items)
+            await self.send_notification(user_id, matched_items, unified_msg_origin)
         else:
             logger.info(f"用户 {user_id} 没有监控商品上架")
 
-    async def send_notification(self, user_id: str, matched_items: list):
+    async def send_notification(self, user_id: str, matched_items: list, unified_msg_origin: str = None):
         """发送监控通知"""
         try:
             # 获取当前日期
@@ -236,14 +237,18 @@ class ValorantShopPlugin(Star):
             )
             
             # 使用context的send_message方法发送通知
-            # 需要使用正确的会话ID格式，通常是 "platform/user_id" 格式
+            # 使用传入的unified_msg_origin，如果没有则尝试构建
             from astrbot.api.event import MessageChain
             
-            # 尝试构建正确的会话ID格式
-            session_id = f"qq/{user_id}"  # 假设是QQ平台，根据实际情况调整
+            if unified_msg_origin:
+                session_id = unified_msg_origin
+            else:
+                # 如果没有提供unified_msg_origin，尝试构建默认格式
+                session_id = f"qq/{user_id}"
+            
             message_chain = MessageChain().message(notification_text)
             await self.context.send_message(session_id, message_chain)
-            logger.info(f"已发送通知给用户 {user_id}")
+            logger.info(f"已发送通知给用户 {user_id}, 会话ID: {session_id}")
             
         except Exception as e:
             logger.error(f"发送通知失败: {e}")
@@ -1292,7 +1297,9 @@ class ValorantShopPlugin(Star):
             yield event.plain_result("🔍 正在执行监控查询，请稍候...")
             
             try:
-                await self.check_user_watchlist(user_id)
+                # 获取unified_msg_origin用于后续通知发送
+                unified_msg_origin = event.unified_msg_origin
+                await self.check_user_watchlist(user_id, unified_msg_origin)
                 yield event.plain_result("✅ 监控查询完成")
             except Exception as e:
                 logger.error(f"手动监控查询失败: {e}")
