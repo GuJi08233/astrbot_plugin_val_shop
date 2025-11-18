@@ -4,5 +4,11 @@
         "type": "string",
         "hint": "设置每日自动监控的时间，格式为HH:MM，如08:01",
         "default": "08:01"
+    },
+    "timezone": {
+        "description": "时区设置",
+        "type": "string",
+        "hint": "设置定时任务使用的时区，如Asia/Shanghai、UTC等",
+        "default": "Asia/Shanghai"
     }
 }

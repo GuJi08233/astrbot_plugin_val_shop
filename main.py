@@ -25,7 +25,7 @@ from playwright.async_api import async_playwright
 # 配置日志
 logger = logging.getLogger("astrbot")
 
-@register("astrbot_plugin_val_shop", "GuJi08233", "无畏契约每日商店查询插件", "v3.0.0")
+@register("astrbot_plugin_val_shop", "GuJi08233", "无畏契约每日商店查询插件", "v3.1.0")
 class ValorantShopPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
@@ -111,22 +111,26 @@ class ValorantShopPlugin(Star):
             from apscheduler.schedulers.asyncio import AsyncIOScheduler
             from apscheduler.triggers.cron import CronTrigger
             
-            self._scheduler = AsyncIOScheduler()
+            # 获取时区配置
+            timezone = self._get_config_value('timezone', 'Asia/Shanghai')
+            
+            # 创建带时区的调度器
+            self._scheduler = AsyncIOScheduler(timezone=timezone)
             
             # 从配置中获取监控时间
             monitor_time = self._get_config_value('monitor_time', '08:01')
             hour, minute = map(int, monitor_time.split(':'))
             
-            # 添加定时任务
+            # 添加定时任务，指定时区
             self._scheduler.add_job(
                 self.daily_auto_check,
-                CronTrigger(hour=hour, minute=minute),
+                CronTrigger(hour=hour, minute=minute, timezone=timezone),
                 id='daily_shop_check',
                 replace_existing=True
             )
             
             self._scheduler.start()
-            logger.info(f"定时任务调度器已启动，每天{monitor_time}执行商店监控")
+            logger.info(f"定时任务调度器已启动，每天{monitor_time}（{timezone}时区）执行商店监控")
             
         except Exception as e:
             logger.error(f"定时任务调度器启动失败: {e}")
@@ -1217,10 +1221,12 @@ class ValorantShopPlugin(Star):
                 "• /商店监控 添加 \"皮肤 武器\" - 添加监控项\n"
                 "• /商店监控 删除 \"皮肤 武器\" - 删除监控项\n"
                 "• /商店监控 列表 - 查看监控列表\n"
+                "• /商店监控 查询 - 立即执行一次监控查询\n"
                 "• /商店监控 开启 - 启用自动查询\n"
                 "• /商店监控 关闭 - 停用自动查询\n\n"
                 f"当前自动查询状态：{auto_check_status}\n"
-                f"⏰ 自动查询时间：每天{self._get_config_value('monitor_time', '08:01')}"
+                f"⏰ 自动查询时间：每天{self._get_config_value('monitor_time', '08:01')}\n"
+                f"🌍 时区设置：{self._get_config_value('timezone', 'Asia/Shanghai')}"
             )
             yield event.plain_result(help_text)
             return
@@ -1262,12 +1268,23 @@ class ValorantShopPlugin(Star):
                 items_text = "\n".join([f"  • {item['item_name']}" for item in watchlist])
                 yield event.plain_result(f"🎯 您的监控列表 ({len(watchlist)}项)：\n{items_text}")
                 
+        elif sub_command == "查询":
+            # 立即执行一次监控查询
+            yield event.plain_result("🔍 正在执行监控查询，请稍候...")
+            
+            try:
+                await self.check_user_watchlist(user_id)
+                yield event.plain_result("✅ 监控查询完成")
+            except Exception as e:
+                logger.error(f"手动监控查询失败: {e}")
+                yield event.plain_result("❌ 监控查询失败，请稍后重试")
+                
         elif sub_command == "开启":
             # 开启自动查询
             await self.update_auto_check(user_id, 1)
             yield event.plain_result(
                 f"✅ 每日自动查询已开启\n"
-                f"⏰ 将在每天{self._get_config_value('monitor_time', '08:01')}执行\n"
+                f"⏰ 将在每天{self._get_config_value('monitor_time', '08:01')}（{self._get_config_value('timezone', 'Asia/Shanghai')}时区）执行\n"
                 "📢 查询到商品才会通知，无匹配不打扰"
             )
             
