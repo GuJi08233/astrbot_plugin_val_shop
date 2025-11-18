@@ -10,5 +10,11 @@
         "type": "string",
         "hint": "设置定时任务使用的时区，如Asia/Shanghai、UTC等",
         "default": "Asia/Shanghai"
+    },
+    "bot_id": {
+        "description": "机器人ID",
+        "type": "string",
+        "hint": "设置机器人的ID，用于定时任务发送消息",
+        "default": "default"
     }
 }
