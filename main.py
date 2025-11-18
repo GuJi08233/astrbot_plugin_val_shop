@@ -277,7 +277,7 @@ class ValorantShopPlugin(Star):
                         {"user_id": user_id, "item_name": item_name}
                     )
                     
-                    if session.rowcount > 0:
+                    if result.rowcount > 0:
                         logger.info(f"用户 {user_id} 删除监控项: {item_name}")
                         return True
                     else:
