@@ -231,8 +231,8 @@ class ValorantShopPlugin(Star):
             
             # 使用context的send_message方法发送通知
             await self.context.send_message(
-                notification_text,  # 只传递消息内容
-                user_id
+                user_id,
+                notification_text
             )
             logger.info(f"已发送通知给用户 {user_id}")
             
