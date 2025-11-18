@@ -145,8 +145,9 @@ class ValorantShopPlugin(Star):
                 for row in users:
                     user_id = row[0]
                     try:
-                        # 定时任务中，我们无法获取unified_msg_origin，所以传递None
-                        await self.check_user_watchlist(user_id, None)
+                        # 定时任务中，构建正确的会话ID格式
+                        unified_msg_origin = f"default:FriendMessage:{user_id}"
+                        await self.check_user_watchlist(user_id, unified_msg_origin)
                     except Exception as e:
                         logger.error(f"检查用户 {user_id} 的监控列表时出错: {e}")
                         continue
