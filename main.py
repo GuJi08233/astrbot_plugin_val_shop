@@ -236,9 +236,13 @@ class ValorantShopPlugin(Star):
             )
             
             # 使用context的send_message方法发送通知
+            # 需要使用正确的会话ID格式，通常是 "platform/user_id" 格式
             from astrbot.api.event import MessageChain
+            
+            # 尝试构建正确的会话ID格式
+            session_id = f"qq/{user_id}"  # 假设是QQ平台，根据实际情况调整
             message_chain = MessageChain().message(notification_text)
-            await self.context.send_message(user_id, message_chain)
+            await self.context.send_message(session_id, message_chain)
             logger.info(f"已发送通知给用户 {user_id}")
             
         except Exception as e:
@@ -852,6 +856,10 @@ class ValorantShopPlugin(Star):
             logger.error("配置不完整，需要包含 userId 和 tid")
             return None
         
+        # 添加时间戳参数防止缓存
+        import time
+        timestamp = int(time.time())
+        
         headers = {
             "Accept": "*/*",
             "Upload-Draft-Interop-Version": "5",
@@ -862,10 +870,15 @@ class ValorantShopPlugin(Star):
             "Connection": "keep-alive",
             "Upload-Complete": "?1",
             "GH-HEADER": "1-2-105-160-0",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
             "Cookie": f"clientType=9; uin=o105940478; appid=102061775; acctype=qc; openid=03A18A61C761D3C44890E2992BB868CE; access_token=551176E5981C1F5422A08C227D193827; userId={user_config['userId']}; accountType=5; tid={user_config['tid']}"
         }
         
-        data = {}
+        # 添加时间戳到请求数据中防止缓存
+        data = {
+            "_t": timestamp
+        }
         
         # 设置固定的重试配置
         max_retries = 3
@@ -873,7 +886,7 @@ class ValorantShopPlugin(Star):
         
         for attempt in range(max_retries):
             try:
-                logger.info(f"发送API请求到 {url} (尝试 {attempt + 1}/{max_retries})")
+                logger.info(f"发送API请求到 {url} (尝试 {attempt + 1}/{max_retries}), 时间戳: {timestamp}")
                 response = requests.post(url, headers=headers, json=data, timeout=timeout)
                 response.raise_for_status()
                 
