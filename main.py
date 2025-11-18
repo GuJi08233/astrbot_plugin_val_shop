@@ -27,15 +27,15 @@ logger = logging.getLogger("astrbot")
 
 @register("astrbot_plugin_val_shop", "GuJi08233", "无畏契约每日商店查询插件", "v3.1.0")
 class ValorantShopPlugin(Star):
-    def __init__(self, context: Context):
+    def __init__(self, context: Context, config=None):
         super().__init__(context)
         # 获取当前插件目录的字体文件路径
         import os
         plugin_dir = os.path.dirname(os.path.abspath(__file__))
         self.font_path = os.path.join(plugin_dir, "fontFamily.ttf")
         
-        # 加载配置
-        self.config = self._load_config()
+        # 使用AstrBot自动传入的配置
+        self.config = config if config is not None else {}
         
         # QQ登录配置
         self.LOGIN_URL = "https://xui.ptlogin2.qq.com/cgi-bin/xlogin?pt_enable_pwd=1&appid=716027609&pt_3rd_aid=102061775&daid=381&pt_skey_valid=0&style=35&force_qr=1&autorefresh=1&s_url=http%3A%2F%2Fconnect.qq.com&refer_cgi=m_authorize&ucheck=1&fall_to_wv=1&status_os=12&redirect_uri=auth%3A%2F%2Ftauth.qq.com%2F&client_id=102061775&pf=openmobile_android&response_type=token&scope=all&sdkp=a&sdkv=3.5.17.lite&sign=a6479455d3e49b597350f13f776a6288&status_machine=MjMxMTdSSzY2Qw%3D%3D&switch=1&time=1763280194&show_download_ui=true&h5sig=trobryxo8IPM0GaSQH12mowKG-CY65brFzkK7_-9EW4&loginty=6"
@@ -86,20 +86,6 @@ class ValorantShopPlugin(Star):
         if hasattr(self, '_scheduler') and self._scheduler:
             self._scheduler.shutdown()
             logger.info("定时任务调度器已关闭")
-
-    def _load_config(self) -> dict:
-        """加载配置文件"""
-        try:
-            config_path = os.path.join(os.path.dirname(__file__), 'config_schema.json')
-            if os.path.exists(config_path):
-                with open(config_path, 'r', encoding='utf-8') as f:
-                    import json
-                    return json.load(f)
-            else:
-                return {}
-        except Exception as e:
-            logger.error(f"加载配置文件失败: {e}")
-            return {}
 
     def _get_config_value(self, key: str, default=None):
         """获取配置值"""
