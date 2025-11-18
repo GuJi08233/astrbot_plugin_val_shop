@@ -230,10 +230,9 @@ class ValorantShopPlugin(Star):
             )
             
             # 使用context的send_message方法发送通知
-            await self.context.send_message(
-                user_id,
-                notification_text
-            )
+            from astrbot.api.event import MessageChain
+            message_chain = MessageChain().message(notification_text)
+            await self.context.send_message(user_id, message_chain)
             logger.info(f"已发送通知给用户 {user_id}")
             
         except Exception as e:
