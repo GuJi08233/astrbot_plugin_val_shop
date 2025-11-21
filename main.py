@@ -111,20 +111,18 @@ class ValorantShopPlugin(Star):
             from playwright.async_api import async_playwright
             logger.info("✅ Playwright库已安装")
             
-            p = await async_playwright().__aenter__()
-            try:
-                # 尝试获取Chromium路径
-                chromium_path = p.chromium.executable_path
-                if chromium_path and os.path.exists(chromium_path):
-                    logger.info(f"✅ Chromium浏览器已安装，路径: {chromium_path}")
-                    await p.__aexit__(None, None, None)
-                    return  # 已安装，直接返回
-                else:
-                    logger.info("Chromium浏览器未安装或路径不存在，准备安装...")
-            except Exception as e:
-                logger.info(f"检查Chromium时出错: {e}，准备安装...")
-            finally:
-                await p.__aexit__(None, None, None)
+            # 使用async with正确管理异步上下文
+            async with async_playwright() as p:
+                try:
+                    # 尝试获取Chromium路径
+                    chromium_path = p.chromium.executable_path
+                    if chromium_path and os.path.exists(chromium_path):
+                        logger.info(f"✅ Chromium浏览器已安装，路径: {chromium_path}")
+                        return  # 已安装，直接返回
+                    else:
+                        logger.info("Chromium浏览器未安装或路径不存在，准备安装...")
+                except Exception as e:
+                    logger.info(f"检查Chromium时出错: {e}，准备安装...")
                 
         except ImportError:
             logger.error("❌ Playwright库未安装，请确保在requirements.txt中包含playwright")
