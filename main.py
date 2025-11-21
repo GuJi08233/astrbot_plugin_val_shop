@@ -5,6 +5,8 @@ import os
 import shutil
 import asyncio
 import requests
+import subprocess
+import sys
 from PIL import Image as PILImage, ImageDraw, ImageFont
 from typing import Dict, Any, Optional
 from datetime import datetime
@@ -75,6 +77,9 @@ class ValorantShopPlugin(Star):
                     )
                 """))
         
+        # 检查并安装Playwright
+        await self.check_and_install_playwright()
+        
         # 启动定时任务调度器
         await self.setup_scheduler()
         
@@ -90,6 +95,76 @@ class ValorantShopPlugin(Star):
     def _get_config_value(self, key: str, default=None):
         """获取配置值"""
         return self.config.get(key, default)
+
+    async def check_and_install_playwright(self):
+        """检查并安装Playwright，避免重复安装"""
+        logger.info("开始检查Playwright安装状态...")
+        
+        # 检查是否需要跳过安装（用于开发环境）
+        skip_install = self._get_config_value('skip_playwright_install', False)
+        if skip_install:
+            logger.info("配置中设置了跳过Playwright安装检查")
+            return
+        
+        # 检查Playwright是否已安装
+        try:
+            from playwright.async_api import async_playwright
+            logger.info("✅ Playwright库已安装")
+            
+            # 检查Chromium浏览器是否已安装
+            p = await async_playwright().__aenter__()
+            try:
+                # 尝试获取Chromium路径
+                chromium_path = p.chromium.executable_path
+                if chromium_path and os.path.exists(chromium_path):
+                    logger.info(f"✅ Chromium浏览器已安装，路径: {chromium_path}")
+                    await p.__aexit__(None, None, None)
+                    return  # 已安装，直接返回
+                else:
+                    logger.info("Chromium浏览器未安装或路径不存在，准备安装...")
+            except Exception as e:
+                logger.info(f"检查Chromium时出错: {e}，准备安装...")
+            finally:
+                await p.__aexit__(None, None, None)
+                
+        except ImportError:
+            logger.info("Playwright库未安装，准备安装...")
+        except Exception as e:
+            logger.info(f"检查Playwright时出错: {e}，准备安装...")
+        
+        # 执行安装
+        try:
+            logger.info("开始安装Playwright...")
+            
+            # 安装playwright库（如果未安装）
+            try:
+                import playwright
+                logger.info("Playwright库已存在，跳过库安装")
+            except ImportError:
+                logger.info("安装Playwright库...")
+                subprocess.run([sys.executable, "-m", "pip", "install", "playwright"],
+                             check=True, capture_output=True)
+                logger.info("✅ Playwright库安装完成")
+            
+            # 安装Chromium浏览器
+            logger.info("安装Chromium浏览器...")
+            subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"],
+                         check=True, capture_output=True)
+            logger.info("✅ Chromium浏览器安装完成")
+            
+            # 安装系统依赖
+            logger.info("安装系统依赖...")
+            subprocess.run([sys.executable, "-m", "playwright", "install-deps", "chromium"],
+                         check=True, capture_output=True)
+            logger.info("✅ 系统依赖安装完成")
+            
+            logger.info("🎉 Playwright安装检查完成！")
+            
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Playwright安装失败: {e}")
+            logger.error(f"错误输出: {e.stderr.decode() if e.stderr else '无'}")
+        except Exception as e:
+            logger.error(f"Playwright安装过程出错: {e}")
 
     async def setup_scheduler(self):
         """设置定时任务调度器"""
