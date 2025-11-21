@@ -97,8 +97,8 @@ class ValorantShopPlugin(Star):
         return self.config.get(key, default)
 
     async def check_and_install_playwright(self):
-        """检查并安装Playwright，避免重复安装"""
-        logger.info("开始检查Playwright安装状态...")
+        """检查并安装Playwright浏览器，避免重复安装"""
+        logger.info("开始检查Playwright浏览器安装状态...")
         
         # 检查是否需要跳过安装（用于开发环境）
         skip_install = self._get_config_value('skip_playwright_install', False)
@@ -106,12 +106,11 @@ class ValorantShopPlugin(Star):
             logger.info("配置中设置了跳过Playwright安装检查")
             return
         
-        # 检查Playwright是否已安装
+        # 检查Chromium浏览器是否已安装
         try:
             from playwright.async_api import async_playwright
             logger.info("✅ Playwright库已安装")
             
-            # 检查Chromium浏览器是否已安装
             p = await async_playwright().__aenter__()
             try:
                 # 尝试获取Chromium路径
@@ -128,23 +127,15 @@ class ValorantShopPlugin(Star):
                 await p.__aexit__(None, None, None)
                 
         except ImportError:
-            logger.info("Playwright库未安装，准备安装...")
+            logger.error("❌ Playwright库未安装，请确保在requirements.txt中包含playwright")
+            return
         except Exception as e:
-            logger.info(f"检查Playwright时出错: {e}，准备安装...")
+            logger.error(f"检查Playwright时出错: {e}")
+            return
         
         # 执行安装
         try:
-            logger.info("开始安装Playwright...")
-            
-            # 安装playwright库（如果未安装）
-            try:
-                import playwright
-                logger.info("Playwright库已存在，跳过库安装")
-            except ImportError:
-                logger.info("安装Playwright库...")
-                subprocess.run([sys.executable, "-m", "pip", "install", "playwright"],
-                             check=True, capture_output=True)
-                logger.info("✅ Playwright库安装完成")
+            logger.info("开始安装Playwright浏览器组件...")
             
             # 安装Chromium浏览器
             logger.info("安装Chromium浏览器...")
@@ -158,7 +149,7 @@ class ValorantShopPlugin(Star):
                          check=True, capture_output=True)
             logger.info("✅ 系统依赖安装完成")
             
-            logger.info("🎉 Playwright安装检查完成！")
+            logger.info("🎉 Playwright浏览器安装检查完成！")
             
         except subprocess.CalledProcessError as e:
             logger.error(f"Playwright安装失败: {e}")
