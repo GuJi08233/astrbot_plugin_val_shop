@@ -80,6 +80,18 @@ class ValorantShopPlugin(Star):
         # 检查并安装Playwright
         await self.check_and_install_playwright()
         
+        # 运行 playwright install-deps 安装系统依赖
+        logger.info("运行 playwright install-deps 安装系统依赖...")
+        try:
+            subprocess.run([sys.executable, "-m", "playwright", "install-deps", "chromium"],
+                         check=True, capture_output=True)
+            logger.info("✅ 系统依赖安装完成")
+        except subprocess.CalledProcessError as e:
+            logger.error(f"系统依赖安装失败: {e}")
+            logger.error(f"错误输出: {e.stderr.decode() if e.stderr else '无'}")
+        except Exception as e:
+            logger.error(f"系统依赖安装过程出错: {e}")
+        
         # 启动定时任务调度器
         await self.setup_scheduler()
         
