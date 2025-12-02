@@ -4,7 +4,7 @@ import logging
 import os
 import shutil
 import asyncio
-import requests
+import aiohttp
 import subprocess
 import sys
 from PIL import Image as PILImage, ImageDraw, ImageFont
@@ -473,41 +473,42 @@ class ValorantShopPlugin(Star):
         }
         
         try:
-            response = requests.post(login_url, headers=headers, json=data)
-            response.raise_for_status()
-            result = response.json()
-            
-            if result.get("result") == 0:
-                login_info = result.get("data", {}).get("login_info", {})
-                uin = login_info.get("uin", 0)
-                user_id = login_info.get("user_id", "")
-                wt = login_info.get("wt", "")
-                
-                # 构造最终cookie
-                final_cookie = (
-                    f"clientType=9; "
-                    f"uin=o{uin}; "
-                    f"appid=102061775; "
-                    f"acctype=qc; "
-                    f"openid={openid}; "
-                    f"access_token=null; "
-                    f"userId={user_id}; "
-                    f"accountType=5; "
-                    f"tid={wt};"
-                )
-                
-                logger.info("✅ 成功获取最终cookie!")
-                
-                return {
-                    "userId": user_id,
-                    "tid": wt,
-                    "openid": openid,
-                    "uin": uin,
-                    "final_cookie": final_cookie
-                }
-            else:
-                logger.error(f"获取最终cookie失败: {result.get('msg', '未知错误')}")
-                return None
+            async with aiohttp.ClientSession() as session:
+                async with session.post(login_url, headers=headers, json=data) as response:
+                    response.raise_for_status()
+                    result = await response.json()
+                    
+                    if result.get("result") == 0:
+                        login_info = result.get("data", {}).get("login_info", {})
+                        uin = login_info.get("uin", 0)
+                        user_id = login_info.get("user_id", "")
+                        wt = login_info.get("wt", "")
+                        
+                        # 构造最终cookie
+                        final_cookie = (
+                            f"clientType=9; "
+                            f"uin=o{uin}; "
+                            f"appid=102061775; "
+                            f"acctype=qc; "
+                            f"openid={openid}; "
+                            f"access_token=null; "
+                            f"userId={user_id}; "
+                            f"accountType=5; "
+                            f"tid={wt};"
+                        )
+                        
+                        logger.info("✅ 成功获取最终cookie!")
+                        
+                        return {
+                            "userId": user_id,
+                            "tid": wt,
+                            "openid": openid,
+                            "uin": uin,
+                            "final_cookie": final_cookie
+                        }
+                    else:
+                        logger.error(f"获取最终cookie失败: {result.get('msg', '未知错误')}")
+                        return None
         except Exception as e:
             logger.error(f"获取最终cookie时出错: {e}")
             return None
@@ -899,7 +900,7 @@ class ValorantShopPlugin(Star):
         
         return qr_filename, None
 
-    def download_image(self, url: str, user_id: str, filename: str) -> Optional[str]:
+    async def download_image(self, url: str, user_id: str, filename: str) -> Optional[str]:
         """下载图片到临时目录"""
         temp_dir = f"./temp/valo/{user_id}"
         os.makedirs(temp_dir, exist_ok=True)
@@ -907,16 +908,18 @@ class ValorantShopPlugin(Star):
         filepath = os.path.join(temp_dir, filename)
         
         try:
-            response = requests.get(url, timeout=10)
-            response.raise_for_status()
-            with open(filepath, 'wb') as file:
-                file.write(response.content)
-            return filepath
-        except requests.RequestException as e:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                    response.raise_for_status()
+                    content = await response.read()
+                    with open(filepath, 'wb') as file:
+                        file.write(content)
+                    return filepath
+        except aiohttp.ClientError as e:
             logger.error(f"下载图片失败: {e}")
             return None
 
-    def get_shop_items_raw(self, user_id: str, user_config: Dict[str, Any]) -> Optional[list]:
+    async def get_shop_items_raw(self, user_id: str, user_config: Dict[str, Any]) -> Optional[list]:
         """获取商店原始商品数据"""
         logger.info(f"开始获取商店原始数据，user_id: {user_id}, userId: {user_config.get('userId', '未知')}")
         url = "https://app.mval.qq.com/go/mlol_store/agame/user_store"
@@ -957,44 +960,45 @@ class ValorantShopPlugin(Star):
         for attempt in range(max_retries):
             try:
                 logger.info(f"发送API请求到 {url} (尝试 {attempt + 1}/{max_retries}), 时间戳: {timestamp}")
-                response = requests.post(url, headers=headers, json=data, timeout=timeout)
-                response.raise_for_status()
-                
-                response_data = response.json()
-                
-                # 打印完整的API响应用于调试
-                logger.info(f"API响应: {json.dumps(response_data, indent=2, ensure_ascii=False)}")
-                
-                if response_data['result'] == 1001 or response_data['result'] == 1003 or response_data['result'] == 999999:
-                    err_msg = response_data.get('errMsg', response_data.get('msg', ''))
-                    logger.error(f"API请求失败，错误码: {response_data['result']}，错误信息: {err_msg}")
-                    return None
-                
-                if 'data' not in response_data:
-                    logger.error("API返回数据格式不正确，缺少'data'字段")
-                    return None
-                
-                if not response_data['data']:
-                    logger.info("API返回数据为空")
-                    return None
-                
-                if not isinstance(response_data['data'], list):
-                    data = response_data['data']
-                else:
-                    data = response_data['data'][0]
-                
-                goods_list = data.get('list', [])
-                
-                if not goods_list:
-                    logger.info("今日商店没有商品")
-                    return None
-                    
-                logger.info(f"获取到 {len(goods_list)} 件商品")
-                
-                # 返回原始商品数据
-                return goods_list
-                
-            except requests.RequestException as e:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(url, headers=headers, json=data, timeout=aiohttp.ClientTimeout(total=timeout)) as response:
+                        response.raise_for_status()
+                        
+                        response_data = await response.json()
+                        
+                        # 打印完整的API响应用于调试
+                        logger.info(f"API响应: {json.dumps(response_data, indent=2, ensure_ascii=False)}")
+                        
+                        if response_data['result'] == 1001 or response_data['result'] == 1003 or response_data['result'] == 999999:
+                            err_msg = response_data.get('errMsg', response_data.get('msg', ''))
+                            logger.error(f"API请求失败，错误码: {response_data['result']}，错误信息: {err_msg}")
+                            return None
+                        
+                        if 'data' not in response_data:
+                            logger.error("API返回数据格式不正确，缺少'data'字段")
+                            return None
+                        
+                        if not response_data['data']:
+                            logger.info("API返回数据为空")
+                            return None
+                        
+                        if not isinstance(response_data['data'], list):
+                            data = response_data['data']
+                        else:
+                            data = response_data['data'][0]
+                        
+                        goods_list = data.get('list', [])
+                        
+                        if not goods_list:
+                            logger.info("今日商店没有商品")
+                            return None
+                            
+                        logger.info(f"获取到 {len(goods_list)} 件商品")
+                        
+                        # 返回原始商品数据
+                        return goods_list
+                        
+            except aiohttp.ClientError as e:
                 logger.error(f"网络请求失败 (尝试 {attempt + 1}/{max_retries}): {e}")
                 if attempt < max_retries - 1:
                     continue
@@ -1008,12 +1012,12 @@ class ValorantShopPlugin(Star):
         logger.error(f"API请求失败，已达到最大重试次数 {max_retries}")
         return None
 
-    def get_shop_data(self, user_id: str, user_config: Dict[str, Any]) -> Optional[str]:
+    async def get_shop_data(self, user_id: str, user_config: Dict[str, Any]) -> Optional[str]:
         """获取商店信息并生成图片的base64编码"""
         logger.info(f"开始获取商店数据，user_id: {user_id}, userId: {user_config.get('userId', '未知')}")
         
         # 调用get_shop_items_raw获取原始商品数据
-        goods_list = self.get_shop_items_raw(user_id, user_config)
+        goods_list = await self.get_shop_items_raw(user_id, user_config)
         
         if not goods_list:
             return None
@@ -1032,8 +1036,8 @@ class ValorantShopPlugin(Star):
                 logger.error("商品缺少图片URL")
                 continue
                 
-            bg_img_path = self.download_image(bg_img_url, user_id, 'bg.jpg')
-            goods_img_path = self.download_image(goods_img_url, user_id, 'goods.jpg')
+            bg_img_path = await self.download_image(bg_img_url, user_id, 'bg.jpg')
+            goods_img_path = await self.download_image(goods_img_url, user_id, 'goods.jpg')
             
             if not bg_img_path or not goods_img_path:
                 logger.error("图片下载失败，跳过该商品")
@@ -1227,7 +1231,7 @@ class ValorantShopPlugin(Star):
         logger.info(f"开始为用户 {user_id} 获取商店信息")
         
         # 获取商店信息
-        shop_data = self.get_shop_data(user_id, user_config)
+        shop_data = await self.get_shop_data(user_id, user_config)
         
         if shop_data:
             # 发送图片消息
@@ -1271,20 +1275,21 @@ class ValorantShopPlugin(Star):
             }
             
             data = {}
-            response = requests.post(url, headers=headers, json=data, timeout=10)
-            response.raise_for_status()
-            
-            response_data = response.json()
-            logger.info(f"配置有效性测试API响应: {response_data.get('result', '未知')}")
-            
-            # 检查API返回结果
-            if response_data.get('result') == 0:
-                logger.info("✅ 用户配置有效")
-                return True
-            else:
-                err_msg = response_data.get('errMsg', response_data.get('msg', '未知错误'))
-                logger.warning(f"❌ 用户配置无效: {err_msg}")
-                return False
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, headers=headers, json=data, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                    response.raise_for_status()
+                    
+                    response_data = await response.json()
+                    logger.info(f"配置有效性测试API响应: {response_data.get('result', '未知')}")
+                    
+                    # 检查API返回结果
+                    if response_data.get('result') == 0:
+                        logger.info("✅ 用户配置有效")
+                        return True
+                    else:
+                        err_msg = response_data.get('errMsg', response_data.get('msg', '未知错误'))
+                        logger.warning(f"❌ 用户配置无效: {err_msg}")
+                        return False
                 
         except Exception as e:
             logger.error(f"测试配置有效性时出错: {e}")
