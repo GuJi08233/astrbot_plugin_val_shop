@@ -681,8 +681,17 @@ class ValorantShopPlugin(Star):
                     if attempt < 2:
                         # 等待一下再重试
                         await asyncio.sleep(2)
-                        # 尝试刷新页面
-                        await page.reload(wait_until="domcontentloaded", timeout=15000)
+                        # 尝试刷新页面，但要检查页面是否仍然有效
+                        try:
+                            # 检查页面是否已关闭
+                            if page.is_closed():
+                                logger.error("页面已关闭，无法刷新")
+                                break
+                            await page.reload(wait_until="domcontentloaded", timeout=15000)
+                        except Exception as reload_error:
+                            logger.error(f"刷新页面时出错: {reload_error}")
+                            # 刷新失败，尝试继续查找而不刷新
+                            continue
             
             if not qr_element:
                 logger.error("无法找到二维码元素")
