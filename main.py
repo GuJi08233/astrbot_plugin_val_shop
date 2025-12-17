@@ -290,7 +290,7 @@ class ValorantShopPlugin(Star):
             return
         
         # 获取商店商品
-        goods_list = self.get_shop_items_raw(user_id, user_config)
+        goods_list = await self.get_shop_items_raw(user_id, user_config)
         if not goods_list:
             logger.info(f"用户 {user_id} 的商店数据为空")
             return
