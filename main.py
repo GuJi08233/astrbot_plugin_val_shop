@@ -77,20 +77,8 @@ class ValorantShopPlugin(Star):
                     )
                 """))
         
-        # 检查并安装Playwright
+        # 检查并安装Playwright（已包含系统依赖检查）
         await self.check_and_install_playwright()
-        
-        # 运行 playwright install-deps 安装系统依赖
-        logger.info("运行 playwright install-deps 安装系统依赖...")
-        try:
-            subprocess.run([sys.executable, "-m", "playwright", "install-deps", "chromium"],
-                         check=True, capture_output=True)
-            logger.info("✅ 系统依赖安装完成")
-        except subprocess.CalledProcessError as e:
-            logger.error(f"系统依赖安装失败: {e}")
-            logger.error(f"错误输出: {e.stderr.decode() if e.stderr else '无'}")
-        except Exception as e:
-            logger.error(f"系统依赖安装过程出错: {e}")
         
         # 启动定时任务调度器
         await self.setup_scheduler()
@@ -118,6 +106,9 @@ class ValorantShopPlugin(Star):
             logger.info("配置中设置了跳过Playwright安装检查")
             return
         
+        # 检查是否跳过系统依赖安装（适用于无sudo权限环境）
+        skip_deps_install = self._get_config_value('skip_deps_install', False)
+        
         # 检查Chromium浏览器是否已安装
         try:
             from playwright.async_api import async_playwright
@@ -130,6 +121,18 @@ class ValorantShopPlugin(Star):
                     chromium_path = p.chromium.executable_path
                     if chromium_path and os.path.exists(chromium_path):
                         logger.info(f"✅ Chromium浏览器已安装，路径: {chromium_path}")
+                        
+                        # 即使浏览器已安装，也检查系统依赖安装状态
+                        if not skip_deps_install:
+                            deps_marker_file = os.path.join(os.path.dirname(chromium_path), '.deps_installed')
+                            if not os.path.exists(deps_marker_file):
+                                logger.info("系统依赖可能未安装，尝试安装...")
+                                await self._install_system_deps(deps_marker_file)
+                            else:
+                                logger.info("✅ 系统依赖已安装（标记文件存在）")
+                        else:
+                            logger.info("⚠️ 配置跳过系统依赖安装检查")
+                        
                         return  # 已安装，直接返回
                     else:
                         logger.info("Chromium浏览器未安装或路径不存在，准备安装...")
@@ -149,23 +152,60 @@ class ValorantShopPlugin(Star):
             
             # 安装Chromium浏览器
             logger.info("安装Chromium浏览器...")
-            subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"],
-                         check=True, capture_output=True)
+            result = subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"],
+                         check=True, capture_output=True, text=True)
             logger.info("✅ Chromium浏览器安装完成")
             
-            # 安装系统依赖
-            logger.info("安装系统依赖...")
-            subprocess.run([sys.executable, "-m", "playwright", "install-deps", "chromium"],
-                         check=True, capture_output=True)
-            logger.info("✅ 系统依赖安装完成")
+            # 获取浏览器安装路径用于创建标记文件
+            async with async_playwright() as p:
+                chromium_path = p.chromium.executable_path
+                deps_marker_file = os.path.join(os.path.dirname(chromium_path), '.deps_installed')
+            
+            # 安装系统依赖（如果未跳过）
+            if not skip_deps_install:
+                await self._install_system_deps(deps_marker_file)
+            else:
+                logger.info("⚠️ 配置跳过系统依赖安装")
             
             logger.info("🎉 Playwright浏览器安装检查完成！")
             
         except subprocess.CalledProcessError as e:
             logger.error(f"Playwright安装失败: {e}")
-            logger.error(f"错误输出: {e.stderr.decode() if e.stderr else '无'}")
+            logger.error(f"错误输出: {e.stderr if e.stderr else '无'}")
         except Exception as e:
             logger.error(f"Playwright安装过程出错: {e}")
+    
+    async def _install_system_deps(self, marker_file: str):
+        """安装系统依赖并创建标记文件"""
+        try:
+            logger.info("正在安装系统依赖...")
+            result = subprocess.run(
+                [sys.executable, "-m", "playwright", "install-deps", "chromium"],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=300  # 5分钟超时
+            )
+            logger.info("✅ 系统依赖安装完成")
+            
+            # 创建标记文件表示依赖已安装
+            try:
+                with open(marker_file, 'w') as f:
+                    f.write(datetime.now().isoformat())
+                logger.info(f"✅ 创建依赖安装标记文件: {marker_file}")
+            except Exception as e:
+                logger.warning(f"无法创建标记文件: {e}")
+                
+        except subprocess.TimeoutExpired:
+            logger.error("⏰ 系统依赖安装超时（5分钟）")
+            logger.warning("如果您的环境没有sudo权限，可以在配置中设置 skip_deps_install: true 来跳过此步骤")
+        except subprocess.CalledProcessError as e:
+            logger.error(f"❌ 系统依赖安装失败: {e}")
+            logger.error(f"错误输出: {e.stderr if e.stderr else '无'}")
+            logger.warning("如果您的环境没有sudo权限，可以在配置中设置 skip_deps_install: true 来跳过此步骤")
+            logger.warning("或者手动运行: sudo playwright install-deps chromium")
+        except Exception as e:
+            logger.error(f"❌ 系统依赖安装过程出错: {e}")
 
     async def setup_scheduler(self):
         """设置定时任务调度器"""
