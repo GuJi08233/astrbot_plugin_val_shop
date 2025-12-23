@@ -457,14 +457,18 @@ class ValorantShopPlugin(Star):
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 filename = f"qr_code_{timestamp}.png"
             
+            # 获取插件目录的绝对路径，确保文件保存在插件目录下
+            plugin_dir = os.path.dirname(os.path.abspath(__file__))
+            abs_filename = os.path.join(plugin_dir, filename)
+            
             # 等待二维码元素加载
             qr_element = await page.wait_for_selector("#qrimg", state="visible", timeout=20000)
             
-            # 截图二维码元素
-            await qr_element.screenshot(path=filename)
+            # 截图二维码元素（使用绝对路径）
+            await qr_element.screenshot(path=abs_filename)
             
-            logger.info(f"✅ 二维码截图已保存: {filename}")
-            return filename
+            logger.info(f"✅ 二维码截图已保存: {abs_filename}")
+            return abs_filename  # 返回绝对路径
         except Exception as e:
             logger.error(f"❌ 保存二维码截图失败: {e}")
             return None
@@ -1501,6 +1505,17 @@ class ValorantShopPlugin(Star):
                 if qr_filename and browser and page:
                     # 发送二维码图片
                     try:
+                        # 检查文件是否存在
+                        if not os.path.exists(qr_filename):
+                            logger.error(f"二维码文件不存在: {qr_filename}")
+                            yield event.plain_result("二维码文件生成失败，请重试")
+                            await browser.close()
+                            return
+                        
+                        # 获取文件大小用于调试
+                        file_size = os.path.getsize(qr_filename)
+                        logger.info(f"二维码文件路径: {qr_filename}, 大小: {file_size} 字节")
+                        
                         # 使用Image.fromFileSystem发送图片，兼容KOOK等平台
                         yield event.chain_result([
                             Image.fromFileSystem(qr_filename),
