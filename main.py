@@ -16,8 +16,7 @@ import re
 from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
-from astrbot.core.message.components import Plain, At
-from astrbot.core.message.components import Image
+import astrbot.api.message_components as Comp
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 
@@ -1248,7 +1247,7 @@ class ValorantShopPlugin(Star):
         try:
             # 遍历消息组件，查找At类型的组件
             for seg in event.get_messages():
-                if isinstance(seg, At):
+                if isinstance(seg, Comp.At):
                     # 排除机器人自己
                     if str(seg.qq) != event.get_self_id():
                         return str(seg.qq)
@@ -1302,8 +1301,8 @@ class ValorantShopPlugin(Star):
                 with open(temp_image_path, 'wb') as f:
                     f.write(image_data)
                 
-                # 使用Image.fromFileSystem发送图片，兼容KOOK等平台
-                yield event.chain_result([Image.fromFileSystem(temp_image_path)])
+                # 使用Comp.Image.fromFileSystem发送图片，兼容KOOK等平台
+                yield event.chain_result([Comp.Image.fromFileSystem(temp_image_path)])
                 
                 # 发送成功后清理临时文件
                 if os.path.exists(temp_image_path):
@@ -1516,10 +1515,10 @@ class ValorantShopPlugin(Star):
                         file_size = os.path.getsize(qr_filename)
                         logger.info(f"二维码文件路径: {qr_filename}, 大小: {file_size} 字节")
                         
-                        # 使用Image.fromFileSystem发送图片，兼容KOOK等平台
+                        # 使用Comp.Image.fromFileSystem发送图片，兼容KOOK等平台
                         yield event.chain_result([
-                            Image.fromFileSystem(qr_filename),
-                            Plain("请在30秒内扫码登录")
+                            Comp.Image.fromFileSystem(qr_filename),
+                            Comp.Plain("请在30秒内扫码登录")
                         ])
                         
                         # 注意：这里不立即删除二维码文件，因为可能需要等待发送完成
