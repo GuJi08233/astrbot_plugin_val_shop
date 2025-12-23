@@ -8,10 +8,11 @@ import aiohttp
 import subprocess
 import sys
 from PIL import Image as PILImage, ImageDraw, ImageFont
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 from datetime import datetime
 import urllib.parse
 import re
+from pathlib import Path
 
 from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
 from astrbot.api.star import Context, Star, register
@@ -84,6 +85,163 @@ class ValorantShopPlugin(Star):
         await self.setup_scheduler()
         
         logger.info("无畏契约插件初始化完成")
+    
+    def _is_kook_platform(self, event: AstrMessageEvent) -> bool:
+        """检测是否是Kook平台"""
+        try:
+            platform_name = event.get_platform_name().lower()
+            return 'kook' in platform_name or 'kaiheila' in platform_name or '开黑啦' in platform_name
+        except Exception as e:
+            logger.warning(f"检测平台类型失败: {e}")
+            return False
+    
+    async def _get_kook_token(self, event: AstrMessageEvent) -> Optional[str]:
+        """获取Kook平台的Bot Token"""
+        try:
+            # 尝试从平台管理器获取Kook平台实例
+            platform_manager = self.context.platform_manager
+            for platform in platform_manager.platform_insts:
+                platform_meta = platform.meta()
+                platform_name_lower = platform_meta.name.lower()
+                if 'kook' in platform_name_lower or 'kaiheila' in platform_name_lower:
+                    kook_client = getattr(platform, 'client', None)
+                    if kook_client:
+                        token = getattr(kook_client, 'token', None)
+                        if token:
+                            return token
+            logger.warning("未能获取Kook Token")
+            return None
+        except Exception as e:
+            logger.error(f"获取Kook Token失败: {e}")
+            return None
+    
+    async def _upload_image_to_kook(self, image_path: str, token: str) -> Optional[str]:
+        """上传图片到Kook并返回URL"""
+        try:
+            if not os.path.exists(image_path):
+                logger.error(f"图片文件不存在: {image_path}")
+                return None
+            
+            file_size = os.path.getsize(image_path)
+            logger.info(f"准备上传图片到Kook，文件大小: {file_size} 字节 ({file_size / (1024 * 1024):.2f} MB)")
+            
+            upload_url = "https://www.kookapp.cn/api/v3/asset/create"
+            headers = {'Authorization': f'Bot {token}'}
+            
+            async with aiohttp.ClientSession() as session:
+                with open(image_path, 'rb') as f:
+                    data = aiohttp.FormData()
+                    data.add_field('file', f, filename=Path(image_path).name)
+                    
+                    async with session.post(upload_url, data=data, headers=headers) as response:
+                        logger.info(f"Kook图片上传响应状态码: {response.status}")
+                        
+                        if response.status == 200:
+                            result = await response.json()
+                            logger.info(f"Kook图片上传响应: {result}")
+                            
+                            if result.get('code') == 0 and 'data' in result:
+                                asset_data = result['data']
+                                # 尝试获取URL，Kook可能返回不同的字段名
+                                asset_url = (asset_data.get('url') or
+                                           asset_data.get('file_url') or
+                                           asset_data.get('link') or
+                                           asset_data.get('asset_url'))
+                                
+                                if asset_url:
+                                    logger.info(f"✅ 图片上传Kook成功，URL: {asset_url}")
+                                    return asset_url
+                                else:
+                                    logger.error(f"无法从Kook响应中提取图片URL: {asset_data}")
+                                    return None
+                            else:
+                                error_msg = result.get('message', '未知错误')
+                                error_code = result.get('code', 'N/A')
+                                logger.error(f"Kook图片上传失败 (代码: {error_code}): {error_msg}")
+                                return None
+                        else:
+                            response_text = await response.text()
+                            logger.error(f"Kook图片上传HTTP错误: {response.status}, 详情: {response_text}")
+                            return None
+                            
+        except Exception as e:
+            logger.error(f"上传图片到Kook异常: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return None
+    
+    async def _send_kook_image_message(self, channel_id: str, image_url: str, token: str) -> bool:
+        """发送图片消息到Kook频道"""
+        try:
+            url = "https://www.kookapp.cn/api/v3/message/create"
+            headers = {
+                "Authorization": f"Bot {token}",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "target_id": channel_id,
+                "content": image_url,
+                "type": 2  # type=2 表示图片消息
+            }
+            
+            logger.info(f"发送Kook图片消息到频道 {channel_id}")
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, headers=headers, json=payload) as resp:
+                    logger.info(f"Kook发送图片响应状态码: {resp.status}")
+                    
+                    if resp.status == 200:
+                        result = await resp.json()
+                        logger.info(f"Kook发送图片响应: {result}")
+                        
+                        if result.get('code') == 0:
+                            logger.info("✅ Kook图片消息发送成功")
+                            return True
+                        else:
+                            error_msg = result.get('message', '未知错误')
+                            logger.error(f"Kook图片消息发送失败: {error_msg}")
+                            return False
+                    else:
+                        response_text = await resp.text()
+                        logger.error(f"Kook发送图片HTTP错误: {resp.status}, 详情: {response_text}")
+                        return False
+                        
+        except Exception as e:
+            logger.error(f"发送Kook图片消息异常: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return False
+    
+    async def _send_image_for_kook(self, event: AstrMessageEvent, image_path: str) -> Tuple[bool, Optional[str]]:
+        """为Kook平台发送图片，返回 (成功标志, 错误信息)"""
+        try:
+            # 获取Kook Token
+            token = await self._get_kook_token(event)
+            if not token:
+                return False, "无法获取Kook认证信息"
+            
+            # 上传图片到Kook
+            image_url = await self._upload_image_to_kook(image_path, token)
+            if not image_url:
+                return False, "图片上传到Kook失败"
+            
+            # 获取目标频道ID
+            channel_id = event.message_obj.group_id or event.session_id
+            if not channel_id:
+                return False, "无法获取目标频道ID"
+            
+            # 发送图片消息
+            success = await self._send_kook_image_message(channel_id, image_url, token)
+            if success:
+                return True, None
+            else:
+                return False, "Kook图片消息发送失败"
+                
+        except Exception as e:
+            logger.error(f"Kook图片发送异常: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return False, str(e)
         
     async def terminate(self):
         """插件终止时清理"""
@@ -1061,15 +1219,26 @@ class ValorantShopPlugin(Star):
         logger.error(f"API请求失败，已达到最大重试次数 {max_retries}")
         return None
 
-    async def get_shop_data(self, user_id: str, user_config: Dict[str, Any]) -> Optional[str]:
-        """获取商店信息并生成图片的base64编码"""
+    async def get_shop_data(self, user_id: str, user_config: Dict[str, Any], keep_file: bool = False) -> Tuple[Optional[str], Optional[str]]:
+        """获取商店信息并生成图片
+        
+        Args:
+            user_id: 用户ID
+            user_config: 用户配置
+            keep_file: 是否保留临时文件（用于Kook平台需要文件路径的情况）
+            
+        Returns:
+            Tuple[Optional[str], Optional[str]]: (base64编码数据, 图片文件路径)
+            如果keep_file为True，返回(None, 文件路径)
+            如果keep_file为False，返回(base64编码, None)
+        """
         logger.info(f"开始获取商店数据，user_id: {user_id}, userId: {user_config.get('userId', '未知')}")
         
         # 调用get_shop_items_raw获取原始商品数据
         goods_list = await self.get_shop_items_raw(user_id, user_config)
         
         if not goods_list:
-            return None
+            return None, None
                 
         # 处理商品图片
         processed_images = []
@@ -1158,7 +1327,7 @@ class ValorantShopPlugin(Star):
         
         if not processed_images:
             logger.error("没有商品图片处理成功")
-            return None
+            return None, None
             
         logger.info(f"成功处理 {len(processed_images)} 张商品图片")
         
@@ -1184,6 +1353,11 @@ class ValorantShopPlugin(Star):
         merged_image.save(merged_image_path)
         logger.info(f"合并图片保存到: {merged_image_path}")
         
+        # 如果需要保留文件（Kook平台），直接返回文件路径
+        if keep_file:
+            logger.info("保留临时文件用于Kook平台发送")
+            return None, merged_image_path
+        
         # 转换为base64
         with open(merged_image_path, 'rb') as f:
             image_bytes = f.read()
@@ -1197,7 +1371,7 @@ class ValorantShopPlugin(Star):
             logger.info(f"清理临时目录: {temp_dir}")
             
         logger.info("商店图片生成完成")
-        return base64_data
+        return base64_data, None
 
     async def get_user_config(self, user_id: str) -> Optional[Dict[str, Any]]:
         """从数据库获取用户配置"""
@@ -1279,19 +1453,45 @@ class ValorantShopPlugin(Star):
 
         logger.info(f"开始为用户 {user_id} 获取商店信息")
         
-        # 获取商店信息
-        shop_data = await self.get_shop_data(user_id, user_config)
+        # 检测是否是Kook平台
+        is_kook = self._is_kook_platform(event)
+        logger.info(f"当前平台: {'Kook' if is_kook else '其他'}")
         
-        if shop_data:
+        # 获取商店信息
+        # 对于Kook平台，需要保留文件用于上传
+        shop_data, image_path = await self.get_shop_data(user_id, user_config, keep_file=is_kook)
+        
+        if shop_data or image_path:
             # 发送图片消息
             try:
-                # 解码base64数据
-                import base64
-                image_data = base64.b64decode(shop_data)
-                # 使用Image.fromBytes创建图片组件
-                yield event.chain_result([Image.fromBytes(image_data)])
+                if is_kook and image_path:
+                    # Kook平台：使用专门的上传和发送方法
+                    logger.info(f"Kook平台：开始上传并发送图片 {image_path}")
+                    success, error_msg = await self._send_image_for_kook(event, image_path)
+                    
+                    # 清理临时文件
+                    temp_dir = f"./temp/valo/{user_id}"
+                    if os.path.exists(temp_dir):
+                        shutil.rmtree(temp_dir)
+                        logger.info(f"清理临时目录: {temp_dir}")
+                    
+                    if not success:
+                        logger.error(f"Kook平台图片发送失败: {error_msg}")
+                        if target_user_id:
+                            yield event.plain_result(f"获取用户 {target_user_id} 的商店信息失败: {error_msg}")
+                        else:
+                            yield event.plain_result(f"获取商店信息失败: {error_msg}")
+                    # 如果成功，Kook已经通过API发送了图片，不需要再yield
+                else:
+                    # 其他平台：使用base64方式
+                    import base64
+                    image_data = base64.b64decode(shop_data)
+                    # 使用Image.fromBytes创建图片组件
+                    yield event.chain_result([Image.fromBytes(image_data)])
             except Exception as e:
                 logger.error(f"图片消息创建失败: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
                 if target_user_id:
                     yield event.plain_result(f"获取用户 {target_user_id} 的商店信息失败，图片生成错误")
                 else:
@@ -1486,14 +1686,36 @@ class ValorantShopPlugin(Star):
                 if qr_filename and browser and page:
                     # 发送二维码图片
                     try:
-                        with open(qr_filename, 'rb') as f:
-                            qr_image_data = f.read()
+                        # 检测是否是Kook平台
+                        is_kook = self._is_kook_platform(event)
+                        logger.info(f"二维码发送平台: {'Kook' if is_kook else '其他'}")
                         
-                        # 发送二维码图片和提示
-                        yield event.chain_result([
-                            Image.fromBytes(qr_image_data),
-                            Plain("请在30秒内扫码登录")
-                        ])
+                        if is_kook:
+                            # Kook平台：使用专门的上传和发送方法
+                            logger.info(f"Kook平台：开始上传并发送二维码 {qr_filename}")
+                            success, error_msg = await self._send_image_for_kook(event, qr_filename)
+                            
+                            if success:
+                                # 发送文字提示（Kook的图片消息和文字消息需要分开发送）
+                                yield event.plain_result("请在30秒内扫码登录")
+                            else:
+                                logger.error(f"Kook平台二维码发送失败: {error_msg}")
+                                await browser.close()
+                                # 清理二维码文件
+                                if os.path.exists(qr_filename):
+                                    os.remove(qr_filename)
+                                yield event.plain_result(f"发送二维码失败: {error_msg}")
+                                return
+                        else:
+                            # 其他平台：使用原有方式
+                            with open(qr_filename, 'rb') as f:
+                                qr_image_data = f.read()
+                            
+                            # 发送二维码图片和提示
+                            yield event.chain_result([
+                                Image.fromBytes(qr_image_data),
+                                Plain("请在30秒内扫码登录")
+                            ])
                         
                         # 清理二维码文件
                         if os.path.exists(qr_filename):
@@ -1502,6 +1724,8 @@ class ValorantShopPlugin(Star):
                             
                     except Exception as e:
                         logger.error(f"发送二维码失败: {e}")
+                        import traceback
+                        logger.error(traceback.format_exc())
                         await browser.close()
                         yield event.plain_result("发送二维码失败，请重试")
                         return
