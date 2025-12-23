@@ -28,7 +28,7 @@ from playwright.async_api import async_playwright
 # 配置日志
 logger = logging.getLogger("astrbot")
 
-@register("astrbot_plugin_val_shop", "GuJi08233", "无畏契约每日商店查询插件", "v3.2.2")
+@register("astrbot_plugin_val_shop", "GuJi08233", "无畏契约每日商店查询插件", "v3.2.3")
 class ValorantShopPlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
