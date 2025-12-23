@@ -16,8 +16,7 @@ import re
 from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
-from astrbot.core.message.components import Plain, At
-from astrbot.core.message.components import Image
+import astrbot.api.message_components as Comp
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 
@@ -27,7 +26,7 @@ from playwright.async_api import async_playwright
 # 配置日志
 logger = logging.getLogger("astrbot")
 
-@register("astrbot_plugin_val_shop", "GuJi08233", "无畏契约每日商店查询插件", "v3.2.2")
+@register("astrbot_plugin_val_shop", "GuJi08233", "无畏契约每日商店查询插件", "v3.2.0")
 class ValorantShopPlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -457,14 +456,18 @@ class ValorantShopPlugin(Star):
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 filename = f"qr_code_{timestamp}.png"
             
+            # 获取插件目录的绝对路径，确保文件保存在插件目录下
+            plugin_dir = os.path.dirname(os.path.abspath(__file__))
+            abs_filename = os.path.join(plugin_dir, filename)
+            
             # 等待二维码元素加载
             qr_element = await page.wait_for_selector("#qrimg", state="visible", timeout=20000)
             
-            # 截图二维码元素
-            await qr_element.screenshot(path=filename)
+            # 截图二维码元素（使用绝对路径）
+            await qr_element.screenshot(path=abs_filename)
             
-            logger.info(f"✅ 二维码截图已保存: {filename}")
-            return filename
+            logger.info(f"✅ 二维码截图已保存: {abs_filename}")
+            return abs_filename  # 返回绝对路径
         except Exception as e:
             logger.error(f"❌ 保存二维码截图失败: {e}")
             return None
@@ -1244,7 +1247,7 @@ class ValorantShopPlugin(Star):
         try:
             # 遍历消息组件，查找At类型的组件
             for seg in event.get_messages():
-                if isinstance(seg, At):
+                if isinstance(seg, Comp.At):
                     # 排除机器人自己
                     if str(seg.qq) != event.get_self_id():
                         return str(seg.qq)
@@ -1285,11 +1288,26 @@ class ValorantShopPlugin(Star):
         if shop_data:
             # 发送图片消息
             try:
-                # 解码base64数据
+                # 解码base64数据并保存为临时文件
                 import base64
+                import tempfile
                 image_data = base64.b64decode(shop_data)
-                # 使用Image.fromBytes创建图片组件
-                yield event.chain_result([Image.fromBytes(image_data)])
+                
+                # 创建临时文件保存图片
+                temp_dir = f"./temp/valo/{user_id}"
+                os.makedirs(temp_dir, exist_ok=True)
+                temp_image_path = os.path.join(temp_dir, "shop_result.png")
+                
+                with open(temp_image_path, 'wb') as f:
+                    f.write(image_data)
+                
+                # 使用Comp.Image.fromFileSystem发送图片，兼容KOOK等平台
+                yield event.chain_result([Comp.Image.fromFileSystem(temp_image_path)])
+                
+                # 发送成功后清理临时文件
+                if os.path.exists(temp_image_path):
+                    os.remove(temp_image_path)
+                    
             except Exception as e:
                 logger.error(f"图片消息创建失败: {e}")
                 if target_user_id:
@@ -1486,22 +1504,32 @@ class ValorantShopPlugin(Star):
                 if qr_filename and browser and page:
                     # 发送二维码图片
                     try:
-                        with open(qr_filename, 'rb') as f:
-                            qr_image_data = f.read()
+                        # 检查文件是否存在
+                        if not os.path.exists(qr_filename):
+                            logger.error(f"二维码文件不存在: {qr_filename}")
+                            yield event.plain_result("二维码文件生成失败，请重试")
+                            await browser.close()
+                            return
                         
-                        # 发送二维码图片和提示
+                        # 获取文件大小用于调试
+                        file_size = os.path.getsize(qr_filename)
+                        logger.info(f"二维码文件路径: {qr_filename}, 大小: {file_size} 字节")
+                        
+                        # 使用Comp.Image.fromFileSystem发送图片，兼容KOOK等平台
                         yield event.chain_result([
-                            Image.fromBytes(qr_image_data),
-                            Plain("请在30秒内扫码登录")
+                            Comp.Image.fromFileSystem(qr_filename),
+                            Comp.Plain("请在30秒内扫码登录")
                         ])
                         
-                        # 清理二维码文件
-                        if os.path.exists(qr_filename):
-                            os.remove(qr_filename)
-                            logger.info(f"清理二维码文件: {qr_filename}")
+                        # 注意：这里不立即删除二维码文件，因为可能需要等待发送完成
+                        # 文件将在登录流程结束后清理
+                        logger.info(f"二维码图片已发送: {qr_filename}")
                             
                     except Exception as e:
                         logger.error(f"发送二维码失败: {e}")
+                        # 清理二维码文件
+                        if os.path.exists(qr_filename):
+                            os.remove(qr_filename)
                         await browser.close()
                         yield event.plain_result("发送二维码失败，请重试")
                         return
@@ -1588,6 +1616,11 @@ class ValorantShopPlugin(Star):
                         logger.error("⏰ 轮询超时，登录可能未完成。")
 
                     await browser.close()
+                    
+                    # 清理二维码文件
+                    if os.path.exists(qr_filename):
+                        os.remove(qr_filename)
+                        logger.info(f"清理二维码文件: {qr_filename}")
 
                     if login_successful.is_set() and login_data:
                         # 获取最终cookie

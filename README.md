@@ -251,19 +251,12 @@ A: 确保聊天平台支持@功能，部分平台可能不支持
 ## 开发信息
 
 - **插件名称**：astrbot_plugin_val_shop
-- **版本**：v3.2.2
+- **版本**：v3.0.0
 - **作者**：GuJi08233
 - **仓库**：https://github.com/GuJi08233/astrbot_plugin_val_shop
-- **依赖**：playwright>=1.56.0, aiohttp>=3.8.0, pillow>=12.0.0, apscheduler>=3.10.0
+- **依赖**：playwright>=1.56.0, requests>=2.32.5, pillow>=12.0.0, apscheduler>=3.10.0
 
 ## 更新日志
-
-### v3.2.2
-- ✅ 版本号同步更新
-- ✅ 修复依赖列表（requests 替换为 aiohttp）
-
-### v3.2.1
-- ✅ 版本号维护更新
 
 ### v3.2.0
 - ✅ 修复定时监控通知发送问题
