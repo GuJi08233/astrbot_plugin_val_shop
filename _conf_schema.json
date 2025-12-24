@@ -27,6 +27,6 @@
         "description": "跳过系统依赖安装",
         "type": "bool",
         "hint": "如果环境没有sudo权限或系统依赖已手动安装，可设置为true跳过install-deps步骤",
-        "default": false
+        "default": true
     }
 }
