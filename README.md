@@ -260,7 +260,7 @@ A: 尝试以下方法：
 - **版本**：v3.2.3
 - **作者**：GuJi08233
 - **仓库**：https://github.com/GuJi08233/astrbot_plugin_val_shop
-- **依赖**：playwright>=1.56.0, requests>=2.32.5, pillow>=12.0.0, apscheduler>=3.10.0
+- **依赖**：playwright>=1.56.0, aiohttp>=3.8.0, pillow>=12.0.0, apscheduler>=3.10.0
 
 ## 更新日志
 
