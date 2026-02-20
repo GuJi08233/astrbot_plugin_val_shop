@@ -1,5 +1,4 @@
 # 插件特定依赖（ astrbot框架依赖已安装）
-playwright>=1.56.0
 aiohttp>=3.8.0
 pillow>=12.0.0
 apscheduler>=3.10.0

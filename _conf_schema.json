@@ -17,16 +17,16 @@
         "hint": "设置机器人的ID，用于定时任务发送消息",
         "default": "default"
     },
-    "skip_playwright_install": {
-        "description": "跳过Playwright安装检查",
-        "type": "bool",
-        "hint": "开发环境可以设置为true跳过Playwright浏览器安装检查",
-        "default": false
+    "login_callback_url": {
+        "description": "登录回调业务地址(s_url)",
+        "type": "string",
+        "hint": "默认http://connect.qq.com（与HAR成功链路一致）；可按需改为其他域名",
+        "default": "http://connect.qq.com"
     },
-    "skip_deps_install": {
-        "description": "跳过系统依赖安装",
-        "type": "bool",
-        "hint": "如果环境没有sudo权限或系统依赖已手动安装，可设置为true跳过install-deps步骤",
-        "default": true
+    "login_u1_url": {
+        "description": "二维码轮询回调地址(u1)",
+        "type": "string",
+        "hint": "默认http://connect.qq.com；建议与已验证成功的登录链路保持一致",
+        "default": "http://connect.qq.com"
     }
 }
