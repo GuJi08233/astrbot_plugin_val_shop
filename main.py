@@ -50,6 +50,15 @@ class ValorantShopPlugin(Star):
         self.DEFAULT_LOGIN_CALLBACK_URL = "http://connect.qq.com"
         self.DEFAULT_LOGIN_U1_URL = "http://connect.qq.com"
         
+        # 微信登录配置
+        self.WECHAT_QRCONNECT_URL = "https://open.weixin.qq.com/connect/sdk/qrconnect"
+        self.WECHAT_LONG_POLL_URL = "https://long.open.weixin.qq.com/connect/l/qrconnect"
+        self.WECHAT_APP_ID = "wxcbb49f1f39656c2a"  # 掌上无畏契约 appid
+        self.WECHAT_APP_NAME = "掌上无畏契约"
+        
+        # Wechat internal state
+        self.wechat_login_tasks = {}
+        
     async def initialize(self):
         """??"""
         db = self.context.get_db()
@@ -1417,7 +1426,7 @@ class ValorantShopPlugin(Star):
 
         logger.info(f"开始获取商店数据，user_id: {user_id}, userId: {user_config.get('userId', '未知')}")
         
-        # 璋冪敤get_shop_items_raw鑾峰彇鍘熷鍟嗗搧鏁版嵁
+        # 璋冪敤get_shop_items_raw鑾峰彇鍘熷鍟嗗搧鏁版嵵
         goods_list = await self.get_shop_items_raw(user_id, user_config)
         
         if not goods_list:
@@ -1663,12 +1672,7 @@ class ValorantShopPlugin(Star):
                 if target_user_id:
                     yield event.plain_result(f"获取用户 {target_user_id} 的商店信息失败，图片生成错误")
                 else:
-                    yield event.plain_result("获取商店信息失败，图片生成错误")
-        else:
-            if target_user_id:
-                yield event.plain_result(f"获取用户 {target_user_id} 的商店信息失败，可能是配置过期或网络问题")
-            else:
-                yield event.plain_result("获取商店信息失败，可能是配置过期或网络问题，请使用 /瓦 重新绑定")
+                    yield event.plain_result("获取商店信息失败，可能是配置过期或网络问题，请使用 /瓦 重新绑定")
 
     async def test_config_validity(self, user_id: str, user_config: Dict[str, Any]) -> bool:
         """??"""
@@ -1892,4 +1896,246 @@ class ValorantShopPlugin(Star):
         except Exception as e:
             logger.error(f"[HTTP登录] 绑定流程异常: type={type(e).__name__}, repr={repr(e)}")
             yield event.plain_result("登录过程出错，请稍后重试")
+
+    @filter.command("wvx", alias=["wx", "微信扫码", "微信登录"])
+    async def wechat_login(self, event: AstrMessageEvent):
+        """处理用户的微信扫码登录逻辑"""
+        user_id = event.message_obj.sender.user_id
+        
+        url = "https://open.weixin.qq.com/connect/sdk/qrconnect?f=json"
+        
+        # 动态生成参数。签名是对特定参数进行 SHA1 散列
+        import time
+        import random
+        import string
+        import hashlib
+        
+        timestamp = str(int(time.time()))
+        noncestr = ''.join(random.choices(string.ascii_letters + string.digits, k=6))
+
+        # 如果之前因为报错产生了旧的 task，也先清理一下，保持逻辑干净
+        for task in self.wechat_login_tasks.get(user_id, []):
+            if not task.done():
+                task.cancel()
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                # 1. 向 app.mval.qq.com 请求 get_sdk_ticket 获取 sdk_ticket
+                ticket_url = "https://app.mval.qq.com/go/auth/get_sdk_ticket"
+                ticket_payload = {
+                    "clienttype": 9,
+                    "config_params": {"client_dev_name": "22041216C", "lang_type": 0},
+                    "mappid": 10200,
+                    "mcode": "69028af6dca2c107f4f58290100011b1a303",
+                    "sdk_appid": self.WECHAT_APP_ID,
+                    "source_game_zone": "agame",
+                    "game_zone": "agame"
+                }
+
+                ticket_headers = {
+                    "user-agent": "mval/2.10062 Channel/3 Manufacturer/Redmi  Mozilla/5.0 (Linux; Android 12; 22041216C Build/V417IR; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/110.0.5481.154 Mobile Safari/537.36",
+                    "content-type": "application/json",
+                }
+                
+                async with session.post(ticket_url, headers=ticket_headers, json=ticket_payload) as resp:
+                    ticket_resp = await resp.json(content_type=None)
+                    
+                sdk_ticket = ticket_resp.get("data", {}).get("ticket", "")
+                if not sdk_ticket:
+                    yield event.plain_result("获取微信登录 sdk_ticket 失败，请稍后重试")
+                    return
+                
+                # 2. 生成微信需要的 signature
+                # 签名规则：sha1("appid=xxx&noncestr=xxx&sdk_ticket=xxx&timestamp=xxx")
+                raw_string = f"appid={self.WECHAT_APP_ID}&noncestr={noncestr}&sdk_ticket={sdk_ticket}&timestamp={timestamp}"
+                signature = hashlib.sha1(raw_string.encode('utf-8')).hexdigest()
+
+                params = {
+                    "appid": self.WECHAT_APP_ID,
+                    "noncestr": noncestr,
+                    "timestamp": timestamp,
+                    "scope": "snsapi_userinfo",
+                    "signature": signature
+                }
+
+                headers = {
+                    "User-Agent": "mval/2.10053 Channel/10068 Manufacturer/Redmi Mozilla/5.0 (Linux; Android 12; 23117RK66C Build/V417IR; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/101.0.4951.61 Mobile Safari/537.36",
+                    "Content-Type": "application/json",
+                    "Accept": "*/*"
+                }
+
+                # 发起请求获取 UUID 和二维码 base64
+                async with session.get(url, params=params, headers=headers) as resp:
+                    resp_text = await resp.text()
+                    try:
+                        result = await resp.json(content_type=None)
+                    except Exception:
+                        import json
+                        result = json.loads(resp_text)
+                    
+                    if result.get("errcode") != 0:
+                        yield event.plain_result(f"获取微信二维码失败: {result.get('errmsg', '未知错误')}")
+                        return
+
+                    uuid = result.get("uuid")
+                    qrcode_base64 = result.get("qrcode", {}).get("qrcodebase64", "")
+
+                    if not uuid or not qrcode_base64:
+                        yield event.plain_result("微信二维码数据不完整")
+                        return
+
+                    # 发送二维码图片
+                    import base64
+                    if "," in qrcode_base64:
+                        qrcode_base64 = qrcode_base64.split(",", 1)[1]
+                    qr_image_bytes = base64.b64decode(qrcode_base64)
+                    
+                    yield event.chain_result([
+                        Image.fromBytes(qr_image_bytes),
+                        Plain("请使用微信扫码登录（30秒内有效）")
+                    ])
+
+            # 生成新的 task 等待微信登录
+            wechat_task = asyncio.create_task(self._val_wechat_login_task(user_id, uuid))
+            self.wechat_login_tasks.setdefault(user_id, []).append(wechat_task)
+
+            # 等待登录结果
+            result = await wechat_task
+
+            if result and result.get("userId") and result.get("tid"):
+                # 登录成功，保存用户配置
+                await self.save_user_config(
+                    user_id,
+                    result['userId'],
+                    result['tid'],
+                    result.get('nickname'),
+                )
+                yield event.plain_result("登录成功！现在可以使用 /每日商店")
+            else:
+                yield event.plain_result("登录失败或已过期，请重新使用 /wvx 获取二维码")
+
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"微信登录异常: {e}")
+            yield event.plain_result("登录过程中发生错误，请重试")
+
+    async def _val_wechat_login_task(self, user_id: str, uuid: str) -> Optional[Dict]:
+        """微信登录任务，轮询获取登录结果。"""
+        logger.info(f"开始微信扫码登录任务，user_id: {user_id}, uuid: {uuid}")
+        try:
+            async with aiohttp.ClientSession() as session:
+                headers = {
+                    "User-Agent": "mval/2.10053 Channel/10068 Manufacturer/Redmi Mozilla/5.0 (Linux; Android 12; 23117RK66C Build/V417IR; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/101.0.4951.61 Mobile Safari/537.36",
+                    "Content-Type": "application/json",
+                    "Accept": "*/*"
+                }
+
+                # 1. 轮询检查是否扫码
+                wx_code = None
+                last_code = None
+                for _ in range(30):
+                    await asyncio.sleep(2)
+                    
+                    poll_url = f"https://long.open.weixin.qq.com/connect/l/qrconnect?f=json&uuid={uuid}"
+                    if last_code is not None:
+                        poll_url += f"&last={last_code}"
+                    
+                    # 抓包显示轮询使用的是 GET 而不是 POST，且数据放在 query params
+                    async with session.get(poll_url, headers=headers) as resp:
+                        try:
+                            if resp.status == 200:
+                                resp_text = await resp.text()
+                                try:
+                                    result = await resp.json(content_type=None)
+                                except:
+                                    import json
+                                    # 微信长轮询可能会返回 "window.wx_errcode=408;" 格式，需要解析
+                                    if "window.wx_errcode" in resp_text:
+                                        import re
+                                        errcode_match = re.search(r"wx_errcode=(\d+)", resp_text)
+                                        code_match = re.search(r"wx_code='([^']+)'", resp_text)
+                                        result = {
+                                            "wx_errcode": int(errcode_match.group(1)) if errcode_match else 408,
+                                            "wx_code": code_match.group(1) if code_match else ""
+                                        }
+                                    else:
+                                        result = json.loads(resp_text)
+                                    
+                                wx_errcode = result.get("wx_errcode")
+                                last_code = wx_errcode
+                                
+                                if wx_errcode in [0, 405] and result.get("wx_code"):
+                                    logger.info(f"扫码成功，获取到 wx_code")
+                                    wx_code = result.get("wx_code")
+                                    break
+                                elif wx_errcode == 404:
+                                    logger.info("扫码中，等待点击确认...")
+                                    continue
+                                elif wx_errcode == 408:
+                                    continue
+                                elif wx_errcode == 0:
+                                    logger.info("授权成功")
+                                    wx_code = result.get("wx_code")
+                                    break
+                                else:
+                                    logger.info(f"扫码异常状态: {wx_errcode}")
+                                    return None
+                        except Exception as e:
+                            logger.error(f"解析微信扫码状态失败: {e}")
+                            return None
+                    
+                if not wx_code:
+                    return None
+                    
+                # aiohttp session already open at the top of the function
+                # 换取最终凭证 (直接使用 login_by_wechat)
+                login_url = "https://app.mval.qq.com/go/auth/login_by_wechat"
+                payload = {
+                    "clienttype": 9,
+                    "config_params": {
+                        "client_dev_name": "22041216C",
+                        "lang_type": 0
+                    },
+                    "login_info": {
+                        "appid": "wxcbb49f1f39656c2a",
+                        "check_third_type": 1,
+                        "code": wx_code,
+                        "wx_info_type": 1
+                    },
+                    "mappid": 10200,
+                    "mcode": "69028af6dca2c107f4f58290100011b1a303",
+                    "source_game_zone": "agame",
+                    "game_zone": "agame"
+                }
+                login_headers = {
+                    "user-agent": "mval/2.6.0.10062 Channel/3 Manufacturer/Redmi  Mozilla/5.0 (Linux; Android 12; 22041216C Build/V417IR; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/110.0.5481.154 Mobile Safari/537.36",
+                    "content-type": "application/json",
+                    "cookie": "clientType=9; openid=null; access_token=null;"
+                }
+                async with session.post(login_url, headers=login_headers, json=payload) as resp:
+                    login_result = await resp.json(content_type=None)
+                    logger.info(f"login_by_wechat result: {login_result}")
+                    
+                    login_info = login_result.get("data", {}).get("login_info", {})
+                    
+                    if login_info and login_info.get("result") == 0:
+                        return {
+                            "userId": login_info.get("user_id"),
+                            "tid": login_info.get("wt"),
+                            "openid": login_info.get("openid"),
+                            "access_token": login_info.get("access_token"),
+                            "clienttype": 9,
+                            "login_type": "wechat"
+                        }
+                    else:
+                        logger.error(f"微信登录验证失败: {login_result}")
+                        return None
+            
+        except asyncio.TimeoutError:
+            logger.warning("微信登录轮询超时")
+            return None
+        except Exception as e:
+            logger.error(f"微信登录轮询异常: {e}")
+            return None
 
