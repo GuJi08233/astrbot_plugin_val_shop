@@ -41,16 +41,19 @@ pip install -r requirements.txt
 
 ### 1. 账号绑定
 
-#### QQ 登录
+#### 统一入口（推荐）
 
 ```text
 /瓦
+/瓦 qq
+/瓦 wx
+/瓦 清除
 ```
 
-流程：
-1. 生成并发送 QQ 二维码。
-2. 30 秒内使用 QQ 扫码确认。
-3. 自动获取并保存 `userId`、`tid`。
+- `/瓦`：按配置项 `default_login_mode` 选择登录方式（默认 `qq`）
+- `/瓦 qq`：强制使用 QQ 二维码登录
+- `/瓦 wx`：强制使用微信二维码登录
+- `/瓦 清除`：清除当前用户已保存的登录信息（`userId/tid`）
 
 #### 微信登录（新增）
 
@@ -93,6 +96,7 @@ pip install -r requirements.txt
 - `monitor_time`：每日自动监控时间，默认 `08:01`
 - `timezone`：时区，默认 `Asia/Shanghai`
 - `bot_id`：机器人 ID，默认 `default`
+- `default_login_mode`：`/瓦` 默认登录模式，`qq` 或 `wx`，默认 `qq`
 - `login_callback_url`：登录 `s_url`，默认 `http://connect.qq.com`
 - `login_u1_url`：登录 `u1`，默认 `http://connect.qq.com`
 

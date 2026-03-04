@@ -17,6 +17,12 @@
         "hint": "设置机器人的ID，用于定时任务发送消息",
         "default": "default"
     },
+    "default_login_mode": {
+        "description": "/瓦 默认登录模式",
+        "type": "string",
+        "hint": "可选 qq 或 wx；当仅输入 /瓦 时按该模式发起登录",
+        "default": "qq"
+    },
     "login_callback_url": {
         "description": "登录回调业务地址(s_url)",
         "type": "string",

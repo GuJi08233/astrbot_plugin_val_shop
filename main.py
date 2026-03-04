@@ -7,6 +7,7 @@ import asyncio
 import aiohttp
 import time
 import random
+import hashlib
 from PIL import Image as PILImage, ImageDraw, ImageFont
 from typing import Dict, Any, Optional, Tuple
 from datetime import datetime
@@ -29,12 +30,12 @@ logger = logging.getLogger("astrbot")
 class ValorantShopPlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
-        # 鑾峰彇褰撳墠鎻掍欢鐩綍鐨勫瓧浣撴枃浠惰矾寰?
+        # 获取当前插件目录中的字体文件路径
         import os
         plugin_dir = os.path.dirname(os.path.abspath(__file__))
         self.font_path = os.path.join(plugin_dir, "fontFamily.ttf")
         
-        # 浣跨敤AstrBot鑷姩浼犲叆鐨勯厤缃?
+        # 使用 AstrBot 自动注入的配置
         self.config = config if config is not None else {}
         
         # QQ 登录配置
@@ -63,7 +64,7 @@ class ValorantShopPlugin(Star):
         """??"""
         db = self.context.get_db()
         
-        # 鍒涘缓鐢ㄦ埛閰嶇疆琛?
+        # 创建用户配置表
         async with db.get_db() as session:
             session: AsyncSession
             async with session.begin():
@@ -79,7 +80,7 @@ class ValorantShopPlugin(Star):
                     )
                 """))
         
-        # 鍒涘缓鐩戞帶鍒楄〃琛?
+        # 创建监控列表表
         async with db.get_db() as session:
             session: AsyncSession
             async with session.begin():
@@ -110,7 +111,7 @@ class ValorantShopPlugin(Star):
     async def _get_kook_token(self, event: AstrMessageEvent) -> Optional[str]:
         """??"""
         try:
-            # 灏濊瘯浠庡钩鍙扮鐞嗗櫒鑾峰彇Kook骞冲彴瀹炰緥
+            # 尝试从平台管理器获取 Kook 平台实例
             platform_manager = self.context.platform_manager
             for platform in platform_manager.platform_insts:
                 platform_meta = platform.meta()
@@ -154,7 +155,7 @@ class ValorantShopPlugin(Star):
                             
                             if result.get('code') == 0 and 'data' in result:
                                 asset_data = result['data']
-                                # 灏濊瘯鑾峰彇URL锛孠ook鍙兘杩斿洖涓嶅悓鐨勫瓧娈靛悕
+                                # 尝试提取 URL，Kook 可能返回不同字段名
                                 asset_url = (asset_data.get('url') or
                                            asset_data.get('file_url') or
                                            asset_data.get('link') or
@@ -266,6 +267,26 @@ class ValorantShopPlugin(Star):
         """??"""
         return self.config.get(key, default)
 
+    def _normalize_login_mode(self, mode: str) -> str:
+        """将登录模式归一化为 qq/wx。"""
+        value = str(mode or "").strip().lower()
+        if value in {"qq", "q"}:
+            return "qq"
+        if value in {"wx", "wvx", "wechat", "weixin", "微信"}:
+            return "wx"
+        return ""
+
+    def _get_default_login_mode(self) -> str:
+        """读取 /瓦 默认登录模式。"""
+        raw_value = self._get_config_value("default_login_mode", "qq")
+        mode = self._normalize_login_mode(raw_value)
+        if not mode:
+            logger.warning(
+                f"default_login_mode 配置无效: {raw_value}，将回退为 qq"
+            )
+            return "qq"
+        return mode
+
     def _normalize_url(self, value: str, default: str = "") -> str:
         """??"""
         url = (value or default or "").strip()
@@ -302,6 +323,36 @@ class ValorantShopPlugin(Star):
             self.LOGIN_URL_TEMPLATE,
             count=1,
         )
+
+    def _get_safe_temp_user_dir(self, user_id: str) -> Path:
+        """构造安全的用户临时目录，避免路径穿越。"""
+        base_dir = Path("./temp/valo").resolve()
+        raw_user_id = str(user_id or "").strip()
+        if not raw_user_id:
+            raise ValueError("user_id 为空，无法创建临时目录")
+
+        normalized = re.sub(r"[^0-9A-Za-z_-]", "_", raw_user_id).strip("_")
+        digest = hashlib.sha256(raw_user_id.encode("utf-8")).hexdigest()[:10]
+        safe_segment = f"{(normalized[:32] or 'user')}_{digest}"
+
+        user_dir = (base_dir / safe_segment).resolve()
+        if user_dir != base_dir and base_dir not in user_dir.parents:
+            raise ValueError(f"检测到非法临时目录路径: {raw_user_id}")
+        return user_dir
+
+    def _build_safe_temp_file_path(self, user_id: str, filename: str) -> Path:
+        """构造安全的用户临时文件路径，避免目录逃逸。"""
+        safe_filename = Path(str(filename or "")).name
+        if not safe_filename:
+            raise ValueError("文件名为空，无法创建临时文件路径")
+
+        user_dir = self._get_safe_temp_user_dir(user_id)
+        user_dir.mkdir(parents=True, exist_ok=True)
+
+        file_path = (user_dir / safe_filename).resolve()
+        if file_path.parent != user_dir:
+            raise ValueError(f"检测到非法临时文件路径: {filename}")
+        return file_path
 
     async def setup_scheduler(self):
         """初始化每日自动监控定时任务。"""
@@ -448,7 +499,7 @@ class ValorantShopPlugin(Star):
                     count = result.scalar()
                     
                     if count > 0:
-                        return False  # 宸插瓨鍦?
+                        return False  # 已存在
                     
                     await session.execute(
                         text("INSERT INTO valo_watchlist (user_id, item_name) VALUES (:user_id, :item_name)"),
@@ -957,7 +1008,7 @@ class ValorantShopPlugin(Star):
         }
 
         try:
-            # 绗竴姝ワ細璁块棶xlogin锛屽垵濮嬪寲浼氳瘽骞惰幏鍙杔ogin_sig
+            # 第一步：访问 xlogin，初始化会话并获取 login_sig
             async with session.get(login_url, headers=headers) as response:
                 response.raise_for_status()
                 login_page = await response.text(errors="ignore")
@@ -1219,7 +1270,7 @@ class ValorantShopPlugin(Star):
         """??"""
         logger.info("\n正在获取最终Cookie...")
         
-        # 浠巐ogin_data涓彁鍙栧弬鏁?
+        # 从 login_data 中提取参数
         openid = login_data.get("openid", "")
         access_token = login_data.get("access_token", "")
         
@@ -1270,7 +1321,7 @@ class ValorantShopPlugin(Star):
                         user_id = login_info.get("user_id", "")
                         wt = login_info.get("wt", "")
                         
-                        # 鏋勯€犳渶缁坈ookie
+                        # 构造最终 Cookie
                         final_cookie = (
                             f"clientType=9; "
                             f"uin=o{uin}; "
@@ -1301,19 +1352,18 @@ class ValorantShopPlugin(Star):
 
     async def download_image(self, url: str, user_id: str, filename: str) -> Optional[str]:
         """??"""
-        temp_dir = f"./temp/valo/{user_id}"
-        os.makedirs(temp_dir, exist_ok=True)
-        
-        filepath = os.path.join(temp_dir, filename)
-        
         try:
+            filepath = self._build_safe_temp_file_path(user_id, filename)
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
                     response.raise_for_status()
                     content = await response.read()
                     with open(filepath, 'wb') as file:
                         file.write(content)
-                    return filepath
+                    return str(filepath)
+        except ValueError as e:
+            logger.error(f"构建临时文件路径失败: {e}")
+            return None
         except aiohttp.ClientError as e:
             logger.error(f"下载图片失败: {e}")
             return None
@@ -1366,7 +1416,7 @@ class ValorantShopPlugin(Star):
                         response_data = await response.json()
                         
                         # 打印完整API响应用于调试
-                        logger.info(f"API鍝嶅簲: {json.dumps(response_data, indent=2, ensure_ascii=False)}")
+                        logger.info(f"API响应: {json.dumps(response_data, indent=2, ensure_ascii=False)}")
                         
                         if response_data['result'] == 1001 or response_data['result'] == 1003 or response_data['result'] == 999999:
                             err_msg = response_data.get('errMsg', response_data.get('msg', ''))
@@ -1425,20 +1475,26 @@ class ValorantShopPlugin(Star):
 
 
         logger.info(f"开始获取商店数据，user_id: {user_id}, userId: {user_config.get('userId', '未知')}")
+        try:
+            user_temp_dir = self._get_safe_temp_user_dir(user_id)
+            user_temp_dir.mkdir(parents=True, exist_ok=True)
+        except ValueError as e:
+            logger.error(f"构建用户临时目录失败: {e}")
+            return None, None
         
-        # 璋冪敤get_shop_items_raw鑾峰彇鍘熷鍟嗗搧鏁版嵵
+        # 调用 get_shop_items_raw 获取原始商品数据
         goods_list = await self.get_shop_items_raw(user_id, user_config)
         
         if not goods_list:
             return None, None
                 
-        # 澶勭悊鍟嗗搧鍥剧墖
+        # 处理商品图片
         processed_images = []
         
         for i, goods in enumerate(goods_list):
             logger.info(f"处理商品 {i+1}/{len(goods_list)}: {goods['goods_name']}")
             
-            # 涓嬭浇鑳屾櫙鍥惧拰鍟嗗搧鍥?
+            # 下载背景图和商品图
             bg_img_url = goods.get('bg_image')
             goods_img_url = goods.get('goods_pic')
             
@@ -1453,66 +1509,73 @@ class ValorantShopPlugin(Star):
                 logger.error("图片下载失败，跳过该商品")
                 continue
                 
-            # 澶勭悊鍥剧墖
+            # 处理图片
             try:
-                # 鎵撳紑鍥剧墖 - 浣跨敤PILImage鑰屼笉鏄疘mage
+                # 打开图片，使用 PILImage 而不是 astrbot 的 Image 组件
                 img1 = PILImage.open(bg_img_path)
                 img2 = PILImage.open(goods_img_path)
                 
-                # 璋冩暣绗簩寮犲浘鐗囩殑澶у皬
+                # 调整商品图尺寸
                 height = 180
                 width = int((img2.width * height) / img2.height)
                 img2_resized = img2.resize((width, height))
                 
-                # 璁＄畻灞呬腑绮樿创鐨勪綅缃?
+                # 计算居中粘贴位置
                 x = (img1.width - img2_resized.width) // 2
                 y = (img1.height - img2_resized.height) // 2
                 
-                # 鍒涘缓鏂板浘鍍?- 浣跨敤PILImage鑰屼笉鏄疘mage
+                # 创建新图像，使用 PILImage 而不是 astrbot 的 Image 组件
                 new_img = PILImage.new('RGB', img1.size)
                 new_img.paste(img1, (0, 0))
                 
-                # 绮樿创鍟嗗搧鍥剧墖 (鏀寔閫忔槑閫氶亾)
+                # 粘贴商品图（支持透明通道）
                 if img2_resized.mode in ('RGBA', 'LA'):
                     new_img.paste(img2_resized, (x, y), mask=img2_resized)
                 else:
                     new_img.paste(img2_resized, (x, y))
                 
-                # 缁樺埗鏂囧瓧
+                # 绘制文字
                 draw = ImageDraw.Draw(new_img)
                 
-                # 鍔犺浇瀛椾綋
+                # 加载字体
                 try:
                     font = ImageFont.truetype(self.font_path, 36)
                 except IOError:
                     logger.warning("字体加载失败，改用默认字体")
                     font = ImageFont.load_default()
                 
-                # 鍟嗗搧鍚嶇О
+                # 商品名称
                 text = goods['goods_name']
                 text_bbox = draw.textbbox((0, 0), text, font=font)
                 text_width = text_bbox[2] - text_bbox[0]
                 text_position = (36, new_img.height - 50)
-                text_color = (255, 255, 255)  # 鐧借壊
+                text_color = (255, 255, 255)  # 白色
                 draw.text(text_position, text, fill=text_color, font=font)
                 
-                # 鍟嗗搧浠锋牸
+                # 商品价格
                 price = goods.get('rmb_price', '0')
                 price_bbox = draw.textbbox((0, 0), price, font=font)
                 price_width = price_bbox[2] - price_bbox[0]
                 text_position = (new_img.width - price_width - 36, new_img.height - 50)
                 draw.text(text_position, price, fill=text_color, font=font)
                 
-                # 淇濆瓨澶勭悊鍚庣殑鍥剧墖
-                processed_image_path = os.path.join(f"./temp/valo/{user_id}", f"{goods['goods_id']}.jpg")
+                # 保存处理后的图片
+                goods_file_stem = re.sub(
+                    r"[^0-9A-Za-z_-]",
+                    "_",
+                    str(goods.get("goods_id", f"goods_{i + 1}")),
+                ).strip("_")
+                if not goods_file_stem:
+                    goods_file_stem = f"goods_{i + 1}"
+                processed_image_path = self._build_safe_temp_file_path(user_id, f"{goods_file_stem}.jpg")
                 new_img.save(processed_image_path)
-                processed_images.append(processed_image_path)
+                processed_images.append(str(processed_image_path))
                 logger.info(f"商品 {goods['goods_name']} 处理完成")
                 
             except Exception as e:
                 logger.error(f"图片处理失败: {e}")
             finally:
-                # 娓呯悊涓存椂鏂囦欢
+                # 清理临时文件
                 for path in [bg_img_path, goods_img_path]:
                     if path and os.path.exists(path):
                         os.remove(path)
@@ -1527,28 +1590,28 @@ class ValorantShopPlugin(Star):
         logger.info("开始合并图片")
         images = [PILImage.open(img_path) for img_path in processed_images]
         
-        # 璁＄畻鍚堝苟鍚庣殑鍥剧墖灏哄
+        # 计算合并后图片尺寸
         max_width = max(img.width for img in images)
-        total_height = sum(img.height for img in images) + (len(images) - 1) * 20  # 20px 闂磋窛
+        total_height = sum(img.height for img in images) + (len(images) - 1) * 20  # 20px 间距
         
-        # 鍒涘缓鍚堝苟鍚庣殑鍥剧墖
+        # 创建合并后的图片
         merged_image = PILImage.new('RGB', (max_width, total_height), color='white')
         
-        # 灏嗘墍鏈夊浘鐗囧爢鍙犲湪涓€璧?
+        # 将所有图片垂直拼接
         y_offset = 0
         for img in images:
             merged_image.paste(img, (0, y_offset))
             y_offset += img.height + 20
         
         # 保存合并后的图片
-        merged_image_path = f"./temp/valo/{user_id}/merged.jpg"
+        merged_image_path = self._build_safe_temp_file_path(user_id, "merged.jpg")
         merged_image.save(merged_image_path)
         logger.info(f"合并图片保存到: {merged_image_path}")
         
         # 如果需要保留文件（Kook平台），直接返回文件路径
         if keep_file:
             logger.info("Kook平台模式，返回本地图片路径")
-            return None, merged_image_path
+            return None, str(merged_image_path)
         
         # 转换为base64
         with open(merged_image_path, 'rb') as f:
@@ -1557,10 +1620,9 @@ class ValorantShopPlugin(Star):
             logger.info(f"图片转换为base64，原始大小: {len(image_bytes)} 字节, base64长度: {len(base64_data)}")
         
         # 清理临时目录
-        temp_dir = f"./temp/valo/{user_id}"
-        if os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir)
-            logger.info(f"清理临时目录: {temp_dir}")
+        if user_temp_dir.exists():
+            shutil.rmtree(user_temp_dir)
+            logger.info(f"清理临时目录: {user_temp_dir}")
             
         logger.info("商店图片生成完成")
         return base64_data, None
@@ -1607,6 +1669,20 @@ class ValorantShopPlugin(Star):
                 )
                 logger.info(f"用户配置保存成功: user_id={user_id}")
 
+    async def clear_user_config(self, user_id: str) -> bool:
+        """清除用户登录配置。"""
+        logger.info(f"清除用户配置: user_id={user_id}")
+        db = self.context.get_db()
+        async with db.get_db() as session:
+            session: AsyncSession
+            async with session.begin():
+                result = await session.execute(
+                    text("DELETE FROM valo_users WHERE user_id = :user_id"),
+                    {"user_id": user_id}
+                )
+                deleted = int(result.rowcount or 0)
+                return deleted > 0
+
     async def get_at_id(self, event: AstrMessageEvent) -> Optional[str]:
         """获取消息中被 @ 的用户ID（排除机器人自身）。"""
         try:
@@ -1650,8 +1726,11 @@ class ValorantShopPlugin(Star):
                     logger.info(f"Kook平台：开始上传并发送图片 {image_path}")
                     success, error_msg = await self._send_image_for_kook(event, image_path)
 
-                    temp_dir = f"./temp/valo/{user_id}"
-                    if os.path.exists(temp_dir):
+                    try:
+                        temp_dir = self._get_safe_temp_user_dir(user_id)
+                    except ValueError:
+                        temp_dir = None
+                    if temp_dir and temp_dir.exists():
                         shutil.rmtree(temp_dir)
                         logger.info(f"清理临时目录: {temp_dir}")
 
@@ -1678,7 +1757,7 @@ class ValorantShopPlugin(Star):
         """??"""
         logger.info(f"测试用户配置有效性，user_id: {user_id}")
         try:
-            # 璋冪敤鍟嗗簵API娴嬭瘯閰嶇疆鏈夋晥鎬?
+            # 调用商店 API 测试配置有效性
             url = "https://app.mval.qq.com/go/mlol_store/agame/user_store"
             
             headers = {
@@ -1802,27 +1881,26 @@ class ValorantShopPlugin(Star):
             yield event.plain_result("未知子命令，请使用 /商店监控 查看帮助")
 
 
-    @filter.command("\u74e6")
-    async def bind_wallet_command(self, event: AstrMessageEvent):
-        """绑定无畏契约账号（HTTP二维码登录）。"""
-        user_id = event.get_sender_id()
+    async def _qq_bind_flow(self, event: AstrMessageEvent, user_id: str, check_existing: bool = True):
+        """QQ 二维码绑定流程。"""
+        if check_existing:
+            user_config = await self.get_user_config(user_id)
+            if user_config:
+                logger.info(f"[HTTP登录] 用户 {user_id} 已绑定，先校验配置")
+                yield event.plain_result("检测到你已绑定账号，正在测试配置有效性...")
+                is_valid = await self.test_config_validity(user_id, user_config)
+                if is_valid:
+                    yield event.plain_result(
+                        f"账号已绑定且配置有效。\n"
+                        f"用户ID: {user_config['userId']}\n"
+                        f"可直接使用 /每日商店"
+                    )
+                    return
+                yield event.plain_result("检测到当前配置已失效，需要重新登录。")
+            else:
+                logger.info(f"[HTTP登录] 用户 {user_id} 未绑定，开始绑定流程")
 
-        user_config = await self.get_user_config(user_id)
-        if user_config:
-            logger.info(f"[HTTP登录] 用户 {user_id} 已绑定，先校验配置")
-            yield event.plain_result("检测到你已绑定账号，正在测试配置有效性...")
-            is_valid = await self.test_config_validity(user_id, user_config)
-            if is_valid:
-                yield event.plain_result(
-                    f"账号已绑定且配置有效。\n"
-                    f"用户ID: {user_config['userId']}\n"
-                    f"可直接使用 /每日商店"
-                )
-                return
-            yield event.plain_result("检测到当前配置已失效，需要重新登录。")
-        else:
-            logger.info(f"[HTTP登录] 用户 {user_id} 未绑定，开始绑定流程")
-            yield event.plain_result("正在生成登录二维码，请稍候...")
+        yield event.plain_result("正在生成QQ登录二维码，请稍候...")
 
         try:
             http_ctx = await self.generate_qr_code_http()
@@ -1885,7 +1963,6 @@ class ValorantShopPlugin(Star):
                     f"用户ID: {final_data['userId']}\n"
                     f"现在可以使用 /每日商店"
                 )
-                return
             finally:
                 await http_session.close()
                 logger.info("[HTTP登录] HTTP会话已关闭")
@@ -1897,10 +1974,79 @@ class ValorantShopPlugin(Star):
             logger.error(f"[HTTP登录] 绑定流程异常: type={type(e).__name__}, repr={repr(e)}")
             yield event.plain_result("登录过程出错，请稍后重试")
 
+    @filter.command("\u74e6")
+    async def bind_wallet_command(self, event: AstrMessageEvent):
+        """账号绑定命令：/瓦、/瓦 qq、/瓦 wx、/瓦 清除。"""
+        user_id = str(event.get_sender_id() or "").strip()
+        if not user_id:
+            yield event.plain_result("无法识别当前用户ID，请稍后重试")
+            return
+
+        message = (event.get_message_str() or "").strip()
+        parts = message.split(maxsplit=1)
+        raw_arg = parts[1].strip() if len(parts) > 1 else ""
+        raw_arg_lower = raw_arg.lower()
+
+        clear_aliases = {"清除", "清空", "解绑", "clear", "reset", "remove", "delete"}
+        if raw_arg and (raw_arg in clear_aliases or raw_arg_lower in clear_aliases):
+            for task in self.wechat_login_tasks.get(user_id, []):
+                if not task.done():
+                    task.cancel()
+            self.wechat_login_tasks.pop(user_id, None)
+
+            cleared = await self.clear_user_config(user_id)
+            if cleared:
+                yield event.plain_result(
+                    "已清除你的登录信息。\n"
+                    "如需重新绑定，可使用 /瓦 qq 或 /瓦 wx"
+                )
+            else:
+                yield event.plain_result("当前未检测到已绑定登录信息，无需清除")
+            return
+
+        explicit_mode = ""
+        if raw_arg:
+            explicit_mode = self._normalize_login_mode(raw_arg)
+            if not explicit_mode:
+                default_mode = self._get_default_login_mode()
+                yield event.plain_result(
+                    "参数无效，请使用：\n"
+                    "/瓦\n"
+                    "/瓦 qq\n"
+                    "/瓦 wx\n"
+                    "/瓦 清除\n"
+                    f"当前默认模式：{default_mode}"
+                )
+                return
+
+        login_mode = explicit_mode or self._get_default_login_mode()
+        if login_mode == "wx":
+            user_config = await self.get_user_config(user_id)
+            if user_config:
+                logger.info(f"[WX登录] 用户 {user_id} 已绑定，先校验配置")
+                yield event.plain_result("检测到你已绑定账号，正在测试配置有效性...")
+                is_valid = await self.test_config_validity(user_id, user_config)
+                if is_valid:
+                    yield event.plain_result(
+                        f"账号已绑定且配置有效。\n"
+                        f"用户ID: {user_config['userId']}\n"
+                        f"可直接使用 /每日商店"
+                    )
+                    return
+                yield event.plain_result("检测到当前配置已失效，需要重新登录。")
+            async for result in self.wechat_login(event):
+                yield result
+            return
+
+        async for result in self._qq_bind_flow(event, user_id, check_existing=True):
+            yield result
+
     @filter.command("wvx", alias=["wx", "微信扫码", "微信登录"])
     async def wechat_login(self, event: AstrMessageEvent):
         """处理用户的微信扫码登录逻辑"""
-        user_id = event.message_obj.sender.user_id
+        user_id = str(event.get_sender_id() or "").strip()
+        if not user_id:
+            user_id = str(event.message_obj.sender.user_id)
         
         url = "https://open.weixin.qq.com/connect/sdk/qrconnect?f=json"
         
@@ -1908,7 +2054,6 @@ class ValorantShopPlugin(Star):
         import time
         import random
         import string
-        import hashlib
         
         timestamp = str(int(time.time()))
         noncestr = ''.join(random.choices(string.ascii_letters + string.digits, k=6))
