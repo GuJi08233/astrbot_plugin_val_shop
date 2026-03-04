@@ -272,7 +272,7 @@ class ValorantShopPlugin(Star):
         value = str(mode or "").strip().lower()
         if value in {"qq", "q"}:
             return "qq"
-        if value in {"wx", "wvx", "wechat", "weixin", "微信"}:
+        if value in {"wx", "wechat", "weixin", "微信"}:
             return "wx"
         return ""
 
@@ -2041,7 +2041,6 @@ class ValorantShopPlugin(Star):
         async for result in self._qq_bind_flow(event, user_id, check_existing=True):
             yield result
 
-    @filter.command("wvx", alias=["wx", "微信扫码", "微信登录"])
     async def wechat_login(self, event: AstrMessageEvent):
         """处理用户的微信扫码登录逻辑"""
         user_id = str(event.get_sender_id() or "").strip()
@@ -2157,7 +2156,7 @@ class ValorantShopPlugin(Star):
                 )
                 yield event.plain_result("登录成功！现在可以使用 /每日商店")
             else:
-                yield event.plain_result("登录失败或已过期，请重新使用 /wvx 获取二维码")
+                yield event.plain_result("登录失败或已过期，请重新使用 /瓦 wx 获取二维码")
 
         except asyncio.CancelledError:
             pass
