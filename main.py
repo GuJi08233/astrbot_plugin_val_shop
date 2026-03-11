@@ -26,7 +26,7 @@ from sqlalchemy import text
 # 配置日志
 logger = logging.getLogger("astrbot")
 
-@register("astrbot_plugin_val_shop", "GuJi08233", "无畏契约每日商店查询插件", "v3.2.4")
+@register("astrbot_plugin_val_shop", "GuJi08233", "无畏契约每日商店查询插件", "v3.2.6")
 class ValorantShopPlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -1368,21 +1368,9 @@ class ValorantShopPlugin(Star):
             logger.error(f"下载图片失败: {e}")
             return None
 
-    async def get_shop_items_raw(self, user_id: str, user_config: Dict[str, Any]) -> Optional[list]:
-        """??"""
-        logger.info(f"开始获取商店原始数据，user_id: {user_id}, userId: {user_config.get('userId', '未知')}")
-        url = "https://app.mval.qq.com/go/mlol_store/agame/user_store"
-        
-        # 检查配置是否完整
-        if not all(k in user_config for k in ['userId', 'tid']):
-            logger.error("配置不完整，需要包含 userId 和 tid")
-            return None
-        
-        # 添加时间戳参数防止缓存
-        import time
-        timestamp = int(time.time())
-        
-        headers = {
+    def _build_store_api_headers(self, user_config: Dict[str, Any]) -> Dict[str, str]:
+        """构造商店接口请求头。"""
+        return {
             "Accept": "*/*",
             "Upload-Draft-Interop-Version": "5",
             "Accept-Language": "zh-CN,zh;q=0.9",
@@ -1394,74 +1382,145 @@ class ValorantShopPlugin(Star):
             "GH-HEADER": "1-2-105-160-0",
             "Cache-Control": "no-cache",
             "Pragma": "no-cache",
-            "Cookie": f"clientType=9; uin=o105940478; appid=102061775; acctype=qc; openid=03A18A61C761D3C44890E2992BB868CE; access_token=551176E5981C1F5422A08C227D193827; userId={user_config['userId']}; accountType=5; tid={user_config['tid']}"
+            "Cookie": (
+                "clientType=9; "
+                "uin=o105940478; "
+                "appid=102061775; "
+                "acctype=qc; "
+                "openid=03A18A61C761D3C44890E2992BB868CE; "
+                "access_token=551176E5981C1F5422A08C227D193827; "
+                f"userId={user_config['userId']}; "
+                "accountType=5; "
+                f"tid={user_config['tid']}"
+            )
         }
-        
-        # 添加时间戳到请求数据中防止缓存
-        data = {
-            "_t": timestamp
-        }
-        
-        # 设置固定的重试配置
-        max_retries = 3
-        timeout = 15
-        
+
+    def _get_store_api_error_message(self, response_data: Dict[str, Any]) -> str:
+        """提取商店接口错误信息。"""
+        return response_data.get("errMsg") or response_data.get("msg") or "未知错误"
+
+    def _is_store_auth_invalid(self, result_code: Any, err_msg: str) -> bool:
+        """判断是否属于登录凭证失效。"""
+        err_msg_lower = (err_msg or "").lower()
+        return (
+            result_code in {1001, 1003, 999999}
+            or "ticket expire" in err_msg_lower
+            or "auth web ticket fail" in err_msg_lower
+        )
+
+    def _extract_shop_goods_list(self, response_data: Dict[str, Any]) -> Tuple[Optional[list], Optional[str]]:
+        """从商店接口响应中提取商品列表。"""
+        if "data" not in response_data:
+            logger.error("API返回数据格式不正确，缺少'data'字段")
+            return None, "商店接口返回格式异常，请稍后重试"
+
+        if not response_data["data"]:
+            logger.info("API返回数据为空")
+            return [], None
+
+        data = response_data["data"]
+        if isinstance(data, list):
+            data = data[0] if data else {}
+
+        if not isinstance(data, dict):
+            logger.error("API返回数据格式不正确，data 不是对象")
+            return None, "商店接口返回格式异常，请稍后重试"
+
+        goods_list = data.get("list", [])
+        if not goods_list:
+            logger.info("今日商店没有商品")
+            return [], None
+
+        logger.info(f"获取到 {len(goods_list)} 个商品")
+        return goods_list, None
+
+    async def _request_store_api(
+        self,
+        user_id: str,
+        user_config: Dict[str, Any],
+        max_retries: int = 3,
+        timeout: int = 15,
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[str], bool]:
+        """请求商店接口，并统一返回可用性结果。"""
+        logger.info(
+            f"开始请求商店接口，user_id: {user_id}, userId: {user_config.get('userId', '未知')}"
+        )
+        url = "https://app.mval.qq.com/go/mlol_store/agame/user_store"
+
+        if not all(k in user_config for k in ["userId", "tid"]):
+            err_msg = "配置不完整，需要包含 userId 和 tid"
+            logger.error(err_msg)
+            return None, err_msg, False
+
+        headers = self._build_store_api_headers(user_config)
+
         for attempt in range(max_retries):
+            timestamp = int(time.time())
+            data = {"_t": timestamp}
             try:
-                logger.info(f"发送API请求到 {url} (尝试 {attempt + 1}/{max_retries}), 时间戳: {timestamp}")
+                logger.info(
+                    f"发送API请求到 {url} (尝试 {attempt + 1}/{max_retries}), 时间戳: {timestamp}"
+                )
                 async with aiohttp.ClientSession() as session:
-                    async with session.post(url, headers=headers, json=data, timeout=aiohttp.ClientTimeout(total=timeout)) as response:
+                    async with session.post(
+                        url,
+                        headers=headers,
+                        json=data,
+                        timeout=aiohttp.ClientTimeout(total=timeout),
+                    ) as response:
                         response.raise_for_status()
-                        
                         response_data = await response.json()
-                        
-                        # 打印完整API响应用于调试
                         logger.info(f"API响应: {json.dumps(response_data, indent=2, ensure_ascii=False)}")
-                        
-                        if response_data['result'] == 1001 or response_data['result'] == 1003 or response_data['result'] == 999999:
-                            err_msg = response_data.get('errMsg', response_data.get('msg', ''))
-                            logger.error(f"API请求失败，错误码: {response_data['result']}，错误信息: {err_msg}")
-                            return None
-                        
-                        if 'data' not in response_data:
-                            logger.error("API返回数据格式不正确，缺少'data'字段")
-                            return None
-                        
-                        if not response_data['data']:
-                            logger.info("API返回数据为空")
-                            return None
-                        
-                        if not isinstance(response_data['data'], list):
-                            data = response_data['data']
-                        else:
-                            data = response_data['data'][0]
-                        
-                        goods_list = data.get('list', [])
-                        
-                        if not goods_list:
-                            logger.info("今日商店没有商品")
-                            return None
-                            
-                        logger.info(f"获取到 {len(goods_list)} 个商品")
-                        
-                        # 返回原始商品数据
-                        return goods_list
-                        
+
+                        result_code = response_data.get("result")
+                        if result_code != 0:
+                            err_msg = self._get_store_api_error_message(response_data)
+                            auth_invalid = self._is_store_auth_invalid(result_code, err_msg)
+                            log_method = logger.warning if auth_invalid else logger.error
+                            log_method(
+                                f"API请求失败，错误码: {result_code}，错误信息: {err_msg}"
+                            )
+                            return None, err_msg, auth_invalid
+
+                        return response_data, None, False
+
             except aiohttp.ClientError as e:
                 logger.error(f"网络请求失败 (尝试 {attempt + 1}/{max_retries}): {e}")
                 if attempt < max_retries - 1:
                     continue
-                return None
+                return None, "请求商店接口失败，请稍后重试", False
             except Exception as e:
                 logger.error(f"处理失败 (尝试 {attempt + 1}/{max_retries}): {e}", exc_info=True)
                 if attempt < max_retries - 1:
                     continue
-                return None
-        
-        logger.error(f"API请求失败，已达到最大重试次数 {max_retries}")
-        return None
+                return None, "处理商店数据时出错，请稍后重试", False
 
-    async def get_shop_data(self, user_id: str, user_config: Dict[str, Any], keep_file: bool = False) -> Tuple[Optional[str], Optional[str]]:
+        logger.error(f"API请求失败，已达到最大重试次数 {max_retries}")
+        return None, "请求商店接口失败，请稍后重试", False
+
+    async def get_shop_items_raw(self, user_id: str, user_config: Dict[str, Any]) -> Optional[list]:
+        """??"""
+        response_data, err_msg, auth_invalid = await self._request_store_api(user_id, user_config)
+        if not response_data:
+            if auth_invalid:
+                logger.warning(f"用户 {user_id} 登录凭证已失效: {err_msg}")
+            elif err_msg:
+                logger.error(f"获取商店原始数据失败: {err_msg}")
+            return None
+
+        goods_list, parse_err_msg = self._extract_shop_goods_list(response_data)
+        if parse_err_msg:
+            logger.error(f"解析商店原始数据失败: {parse_err_msg}")
+            return None
+        return goods_list or None
+
+    async def get_shop_data(
+        self,
+        user_id: str,
+        user_config: Dict[str, Any],
+        keep_file: bool = False,
+        goods_list: Optional[list] = None,
+    ) -> Tuple[Optional[str], Optional[str]]:
         """??"""
 
 
@@ -1483,7 +1542,8 @@ class ValorantShopPlugin(Star):
             return None, None
         
         # 调用 get_shop_items_raw 获取原始商品数据
-        goods_list = await self.get_shop_items_raw(user_id, user_config)
+        if goods_list is None:
+            goods_list = await self.get_shop_items_raw(user_id, user_config)
         
         if not goods_list:
             return None, None
@@ -1718,7 +1778,51 @@ class ValorantShopPlugin(Star):
         is_kook = self._is_kook_platform(event)
         logger.info(f"当前平台: {'Kook' if is_kook else '其他'}")
 
-        shop_data, image_path = await self.get_shop_data(user_id, user_config, keep_file=is_kook)
+        # 先检测凭证是否可用，避免过期配置继续漏到图片生成链路。
+        response_data, err_msg, auth_invalid = await self._request_store_api(
+            user_id,
+            user_config,
+            max_retries=1,
+            timeout=10,
+        )
+        if not response_data:
+            if auth_invalid:
+                if target_user_id:
+                    yield event.plain_result(
+                        f"用户 {target_user_id} 的登录凭证已过期，请对方重新使用 /瓦 绑定后再试"
+                    )
+                else:
+                    yield event.plain_result("当前登录凭证已过期，请使用 /瓦 重新绑定后再试")
+            else:
+                if target_user_id:
+                    yield event.plain_result(
+                        f"获取用户 {target_user_id} 的商店信息失败: {err_msg or '请稍后重试'}"
+                    )
+                else:
+                    yield event.plain_result(f"获取商店信息失败: {err_msg or '请稍后重试'}")
+            return
+
+        goods_list, parse_err_msg = self._extract_shop_goods_list(response_data)
+        if parse_err_msg:
+            if target_user_id:
+                yield event.plain_result(f"获取用户 {target_user_id} 的商店信息失败: {parse_err_msg}")
+            else:
+                yield event.plain_result(f"获取商店信息失败: {parse_err_msg}")
+            return
+
+        if not goods_list:
+            if target_user_id:
+                yield event.plain_result(f"用户 {target_user_id} 今日商店暂无可用数据")
+            else:
+                yield event.plain_result("今日商店暂无可用数据，请稍后再试")
+            return
+
+        shop_data, image_path = await self.get_shop_data(
+            user_id,
+            user_config,
+            keep_file=is_kook,
+            goods_list=goods_list,
+        )
 
         if shop_data or image_path:
             try:
@@ -1752,43 +1856,27 @@ class ValorantShopPlugin(Star):
                     yield event.plain_result(f"获取用户 {target_user_id} 的商店信息失败，图片生成错误")
                 else:
                     yield event.plain_result("获取商店信息失败，可能是配置过期或网络问题，请使用 /瓦 重新绑定")
+        else:
+            if target_user_id:
+                yield event.plain_result(f"获取用户 {target_user_id} 的商店信息失败，请稍后重试")
+            else:
+                yield event.plain_result("获取商店信息失败，请稍后重试")
 
     async def test_config_validity(self, user_id: str, user_config: Dict[str, Any]) -> bool:
         """??"""
         logger.info(f"测试用户配置有效性，user_id: {user_id}")
         try:
-            # 调用商店 API 测试配置有效性
-            url = "https://app.mval.qq.com/go/mlol_store/agame/user_store"
-            
-            headers = {
-                "Accept": "*/*",
-                "Upload-Draft-Interop-Version": "5",
-                "Accept-Language": "zh-CN,zh;q=0.9",
-                "Accept-Encoding": "gzip, deflate, br",
-                "Content-Type": "application/json",
-                "User-Agent": "mval/2.3.0.10050 Channel/5 Manufacturer/Xiaomi  Mozilla/5.0 (Linux; Android 14; 23078RKD5C Build/UP1A.230905.011; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/140.0.7339.207 Mobile Safari/537.36",
-                "Connection": "keep-alive",
-                "Upload-Complete": "?1",
-                "GH-HEADER": "1-2-105-160-0",
-                "Cookie": f"clientType=9; uin=o105940478; appid=102061775; acctype=qc; openid=03A18A61C761D3C44890E2992BB868CE; access_token=551176E5981C1F5422A08C227D193827; userId={user_config['userId']}; accountType=5; tid={user_config['tid']}"
-            }
-            
-            data = {}
-            async with aiohttp.ClientSession() as session:
-                async with session.post(url, headers=headers, json=data, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                    response.raise_for_status()
-                    
-                    response_data = await response.json()
-                    logger.info(f"配置有效性测试API响应: {response_data.get('result', '未知')}")
-
-                    if response_data.get('result') == 0:
-                        logger.info("用户配置有效")
-                        return True
-                    else:
-                        err_msg = response_data.get('errMsg', response_data.get('msg', '未知错误'))
-                        logger.warning(f"用户配置无效: {err_msg}")
-                        return False
-                
+            response_data, err_msg, _ = await self._request_store_api(
+                user_id,
+                user_config,
+                max_retries=1,
+                timeout=10,
+            )
+            if response_data:
+                logger.info("用户配置有效")
+                return True
+            logger.warning(f"用户配置无效: {err_msg or '未知错误'}")
+            return False
         except Exception as e:
             logger.error(f"测试配置有效性时出错: {e}")
             return False
