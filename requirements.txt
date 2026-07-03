@@ -1,4 +1,5 @@
-# 插件特定依赖（ astrbot框架依赖已安装）
-aiohttp>=3.8.0
-pillow>=12.0.0
-apscheduler>=3.10.0
+# 插件特定依赖（astrbot框架依赖已安装）
+# 注意：以下依赖版本需要与AstrBot框架兼容
+aiohttp>=3.11.0  # AstrBot使用>=3.11.18
+# pillow>=12.0.0  # 注释掉，使用AstrBot自带的pillow (>=11.2.1)
+apscheduler>=3.10.0  # AstrBot使用>=3.11.0
